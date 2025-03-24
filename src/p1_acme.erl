@@ -34,82 +34,130 @@
 -define(DEFAULT_TIMEOUT, timer:minutes(1)).
 -define(RETRY_TIMEOUT, 500).
 -define(DEBUG(Fmt, Args),
-	case State#state.debug_fun of
-	    undefined -> ok;
-	    _ -> (State#state.debug_fun)(Fmt, Args)
-	end).
+    case State#state.debug_fun of
+        undefined -> ok;
+        _ -> (State#state.debug_fun)("~s ~p: " ++ Fmt, [get_rfc3339_timestamp(), ?LINE | Args])
+    end
+).
 
--record(state, {command        :: command(),
-		dir_url        :: string(),
-		domains        :: [domain()],
-		contact        :: [binary()],
-		end_time       :: integer(),
-		challenge_type :: undefined | binary(),
-		account        :: undefined | {priv_key(), undefined | string()},
-		cert_type      :: undefined | cert_type(),
-		cert           :: undefined | cert(),
-		cert_key       :: undefined | priv_key(),
-		ca_certs       :: [cert()],
-		nonce          :: undefined | binary(),
-		new_acc_url    :: undefined | string(),
-		new_nonce_url  :: undefined | string(),
-		new_order_url  :: undefined | string(),
-		revoke_url     :: undefined | string(),
-		order_url      :: undefined | string(),
-		debug_fun      :: undefined | debug_fun(),
-		challenge_fun  :: undefined | challenge_fun()}).
+-define(RETRIABLE_INET_REASONS, [
+    ehostdown,
+    ehostunreach,
+    enetdown,
+    enetreset,
+    enetunreach,
+    etimedout,
+    erefused,
+    econnrefused,
+    econnreset
+]).
+
+-record(state, {
+    command :: command(),
+    dir_url :: string(),
+    domains :: [domain()],
+    contact :: [binary()],
+    end_time :: integer(),
+    challenge_type :: undefined | binary(),
+    account :: undefined | {priv_key(), undefined | string()},
+    cert_type :: undefined | cert_type(),
+    cert :: undefined | cert(),
+    cert_key :: undefined | priv_key(),
+    ca_certs :: [cert()],
+    nonce :: undefined | binary(),
+    new_acc_url :: undefined | string(),
+    new_nonce_url :: undefined | string(),
+    new_order_url :: undefined | string(),
+    revoke_url :: undefined | string(),
+    order_url :: undefined | string(),
+    debug_fun :: undefined | debug_fun(),
+    challenge_fun :: undefined | challenge_fun(),
+    retry_request :: undefined | {http_req_fun(), non_neg_integer()}
+}).
 
 -type state() :: #state{}.
 -type command() :: issue | revoke.
 -type priv_key() :: public_key:private_key().
 -type pub_key() :: #'RSAPublicKey'{} | #'ECPoint'{}.
 -type cert() :: #'OTPCertificate'{}.
--type domain() :: string(). %% UTF-8 charlist()
+%% UTF-8 charlist()
+-type domain() :: string().
 -type cert_type() :: ec | rsa.
--type challenge_data() :: [#{domain := domain(),
-			     token := binary(),
-			     key := binary()}].
+-type challenge_data() :: [
+    #{
+        domain := domain(),
+        token := binary(),
+        key := binary()
+    }
+].
 -type challenge_fun() :: fun((challenge_data()) -> any()).
 -type challenge_type() :: 'http-01'.
 -type debug_fun() :: fun((string(), list()) -> _).
 -type http_req_fun() :: fun((state()) -> {http_method(), _}).
--type option() :: {timeout, pos_integer()} |
-		  {debug_fun, debug_fun()}.
--type issue_option() :: {contact, [binary() | string()]} |
-			{cert_type, cert_type()} |
-			{cert_key, priv_key()} |
-			{ca_certs, [cert()]} |
-			{challenge_type, challenge_type()} |
-			{challenge_fun, challenge_fun()} |
-			option().
+-type option() ::
+    {timeout, pos_integer()}
+    | {debug_fun, debug_fun()}.
+-type issue_option() ::
+    {contact, [binary() | string()]}
+    | {cert_type, cert_type()}
+    | {cert_key, priv_key()}
+    | {ca_certs, [cert()]}
+    | {challenge_type, challenge_type()}
+    | {challenge_fun, challenge_fun()}
+    | option().
 -type revoke_option() :: option().
 -type http_method() :: get | post | head.
 -type http_header() :: {string(), string()}.
 -type http_json() :: {100..699, [http_header()], map()}.
 -type http_bin() :: {100..699, [http_header()], binary()}.
--type bad_cert_reason() :: cert_expired | invalid_issuer | invalid_signature |
-			   name_not_permitted | missing_basic_constraint |
-			   invalid_key_usage | selfsigned_peer | unknown_ca |
-			   empty_chain | key_mismatch.
--type error_reason() :: {codec_error, yconf:error_reason(), yconf:ctx(), map()} |
-			{http_error, term()} |
-			{challenge_failed, domain(), undefined | p1_acme_codec:err_obj()} |
-			{unsupported_challenges, domain(), [string()]} |
-			{bad_pem, string()} |
-			{bad_der, string()} |
-			{bad_json, binary()} |
-			{bad_cert, bad_cert_reason()} |
-			{problem_report, p1_acme_codec:err_obj()}.
+-type err_obj() :: map().
+-type bad_cert_reason() ::
+    cert_expired
+    | invalid_issuer
+    | invalid_signature
+    | name_not_permitted
+    | missing_basic_constraint
+    | invalid_key_usage
+    | selfsigned_peer
+    | unknown_ca
+    | empty_chain
+    | key_mismatch.
+-type error_reason() ::
+    {http_error, term()}
+    | {challenge_fun_failed, term()}
+    | {challenge_failed, domain(), undefined | err_obj()}
+    | {unsupported_challenges, domain(), [string()]}
+    | {bad_pem, string()}
+    | {bad_der, string()}
+    | {bad_json, binary()}
+    | {bad_response, map()}
+    | {bad_cert, bad_cert_reason()}
+    | {retryable, term()}
+    | {bad_poll_response, map()}
+    | {bad_auth_response, map()}
+    | {bad_order_response, map()}
+    | {bad_account_response, map()}
+    | {bad_directory_response, map()}.
+
 -type error_return() :: {error, error_reason()}.
--type issue_return() :: {ok, #{acc_key := priv_key(),
-			       cert_key := priv_key(),
-			       cert_chain := [cert(), ...],
-			       validation_result =>
-				   valid | {bad_cert, bad_cert_reason()}}} |
-			error_return().
+-type issue_return() ::
+    {ok, #{
+        acc_key := priv_key(),
+        cert_key := priv_key(),
+        cert_chain := [cert(), ...],
+        validation_result =>
+            valid | {bad_cert, bad_cert_reason()}
+    }}
+    | error_return().
 -type revoke_return() :: ok | error_return().
 -type acme_return() :: issue_return() | revoke_return().
-
+% #{<<"type">> => binary(),
+% 	<<"url">> => binary(),
+% 	<<"status">> => <<"pending">> | <<"processing">> | <<"valid">> | <<"invalid">>,
+% 	<<"validated">> => erlang:timestamp(),
+% 	<<"token">> => binary(),
+% 	<<"error">> => err_obj()}.
+-type challenge_obj() :: map().
 -export_type([error_reason/0, issue_return/0, revoke_return/0, challenge_data/0]).
 
 %%%===================================================================
@@ -129,8 +177,8 @@ start(_StartType, _StartArgs) ->
 start() ->
     start(normal, []),
     case application:ensure_all_started(?MODULE) of
-	{ok, _} -> ok;
-	Err -> Err
+        {ok, _} -> ok;
+        Err -> Err
     end.
 
 stop() ->
@@ -140,15 +188,22 @@ stop() ->
 issue(DirURL, Domains) ->
     issue(DirURL, Domains, generate_key(ec), []).
 
--spec issue(binary() | string(), [domain()],
-	    priv_key() | [issue_option()]) -> issue_return().
+-spec issue(
+    binary() | string(),
+    [domain()],
+    priv_key() | [issue_option()]
+) -> issue_return().
 issue(DirURL, Domains, Opts) when is_list(Opts) ->
     issue(DirURL, Domains, generate_key(ec), Opts);
 issue(DirURL, Domains, AccKey) ->
     issue(DirURL, Domains, AccKey, []).
 
--spec issue(binary() | string(), [domain()],
-	    priv_key(), [issue_option()]) -> issue_return().
+-spec issue(
+    binary() | string(),
+    [domain()],
+    priv_key(),
+    [issue_option()]
+) -> issue_return().
 issue(DirURL, Domains, AccKey, Opts) ->
     State = init_state(issue, DirURL, Domains, AccKey, Opts),
     request_directory(State).
@@ -160,45 +215,52 @@ revoke(DirURL, Cert, CertKey) ->
 -spec revoke(binary() | string(), cert(), priv_key(), [revoke_option()]) -> revoke_return().
 revoke(DirURL, Cert, CertKey, Opts) ->
     State = init_state(revoke, DirURL, Cert, CertKey, Opts),
-    request_directory(State).
+    case request_directory(State) of
+        {ok, _Reply, _State1} ->
+            ok;
+        Err ->
+            Err
+    end.
 
 -spec format_error(error_reason()) -> string().
-format_error({codec_error, Reason, Ctx, _JSON}) ->
-    format("Codec error: Failed to validate JSON object: ~s "
-	   "(not an ACMEv2 compatible server?)",
-	   [yconf:format_error(Reason, Ctx)]);
 format_error({http_error, Err}) ->
     "HTTP error: " ++
-	case Err of
-	    {code, Code, ""} ->
-		"unexpected status code: " ++ integer_to_list(Code);
-	    {code, Code, Slogan} ->
-		format("~ts (~B)", [Slogan, Code]);
-	    {inet, Reason} ->
-		"transport failure: " ++ format_inet_error(Reason);
-	    {could_not_parse_as_http, _} ->
-		"received malformed HTTP packet";
-	    {missing_header, Header} ->
-		format("missing '~s' header", [Header]);
-	    {unexpected_content_type, Type} ->
-		format("unexpected content type: ~ts", [Type]);
-	    _ ->
-		format("~p", [Err])
-	end;
+        case Err of
+            {code, Code, ""} ->
+                "unexpected status code: " ++ integer_to_list(Code);
+            {code, Code, Slogan} ->
+                format("~ts (~B)", [Slogan, Code]);
+            {inet, Reason} ->
+                "transport failure: " ++ format_inet_error(Reason);
+            {could_not_parse_as_http, _} ->
+                "received malformed HTTP packet";
+            {missing_header, Header} ->
+                format("missing '~s' header", [Header]);
+            {unexpected_content_type, Type} ->
+                format("unexpected content type: ~ts", [Type]);
+            _ ->
+                format("~p", [Err])
+        end;
 format_error({challenge_failed, Domain, undefined}) ->
     format("Challenge failed for domain ~ts", [Domain]);
 format_error({challenge_failed, Domain, ErrObj}) ->
-    format("Challenge failed for domain ~ts: ~ts",
-	   [Domain, format_problem_report(ErrObj)]);
+    format(
+        "Challenge failed for domain ~ts: ~ts",
+        [Domain, format_problem_report(ErrObj)]
+    );
 format_error({unsupported_challenges, Domain, Types}) ->
-    format("ACME server offered unsupported challenges for domain ~ts: ~s",
-	   [Domain, string:join(Types, ", ")]);
+    format(
+        "ACME server offered unsupported challenges for domain ~ts: ~s",
+        [Domain, string:join(Types, ", ")]
+    );
 format_error({bad_pem, URL}) ->
     format("Failed to decode PEM certificate chain obtained from ~s", [URL]);
 format_error({bad_der, URL}) ->
     format("Failed to decode ASN.1 DER certificate in the chain obtained from ~s", [URL]);
 format_error({bad_json, Data}) ->
     format("Failed to decode JSON: ~s", [Data]);
+format_error({bad_response, JSON}) ->
+    format("Server responded with ~p", [JSON]);
 format_error({bad_cert, Reason}) ->
     format_bad_cert_error(Reason);
 format_error({problem_report, ErrObj}) ->
@@ -238,7 +300,7 @@ format_inet_error(Reason) when is_atom(Reason) ->
         Txt -> Txt
     end.
 
--spec format_problem_report(p1_acme_codec:err_obj()) -> string().
+-spec format_problem_report(err_obj()) -> string().
 format_problem_report(#{type := Type, detail := Detail}) ->
     format("ACME server reported: ~ts (error type: ~s)", [Detail, Type]);
 format_problem_report(#{type := Type}) ->
@@ -254,183 +316,210 @@ format(Fmt, Args) ->
 %%%===================================================================
 %%% ACME Requests
 %%%===================================================================
--spec request_directory(state()) -> acme_return().
 request_directory(State) ->
     Req = fun(S) ->
-		  {get, {S#state.dir_url, []}}
-	  end,
+        {get, {S#state.dir_url, []}}
+    end,
     case http_request(State, Req) of
-	{ok, Reply, State1} ->
-	    handle_directory_response(Reply, State1);
-	Err ->
-	    Err
+        {ok, Reply, State1} ->
+            handle_directory_response(Reply, State1);
+        Err ->
+            Err
     end.
 
--spec request_new_nonce(state()) -> acme_return().
 request_new_nonce(State) ->
+    ?DEBUG("Requesting new nonce...", []),
     Req = fun(S) ->
-		  {head, {S#state.new_nonce_url, []}}
-	  end,
+        {head, {S#state.new_nonce_url, []}}
+    end,
     case http_request(State, Req) of
-	{ok, Reply, State1} ->
-	    handle_nonce_response(Reply, State1);
-	Err ->
-	    Err
+        {ok, Reply, State1} ->
+            ?DEBUG("Got nonce: ~p", [Reply]),
+            handle_nonce_response(Reply, State1);
+        Err ->
+            ?DEBUG("Error getting nonce: ~p", [Err]),
+            Err
     end.
 
 -spec request_new_account(state()) -> issue_return().
 request_new_account(State) ->
     Req = fun(S) ->
-		  Body = #{<<"termsOfServiceAgreed">> => true,
-			   <<"contact">> => S#state.contact},
-		  JoseJSON = jose_json(S, Body, S#state.new_acc_url),
-		  {post, {S#state.new_acc_url, [],
-			  "application/jose+json", JoseJSON}}
-	  end,
+        Body = #{
+            <<"termsOfServiceAgreed">> => true,
+            <<"contact">> => S#state.contact
+        },
+        JoseJSON = jose_json(S, Body, S#state.new_acc_url),
+        {post, {S#state.new_acc_url, [], "application/jose+json", JoseJSON}}
+    end,
     case http_request(State, Req) of
-	{ok, Reply, State1} ->
-	    handle_account_response(Reply, State1);
-	Err ->
-	    Err
+        {ok, Reply, State1} ->
+            handle_account_response(Reply, State1);
+        Err ->
+            Err
     end.
 
 -spec request_new_order(state()) -> issue_return().
 request_new_order(State) ->
     Req = fun(S) ->
-		  Body = #{<<"identifiers">> =>
-			       [#{<<"type">> => <<"dns">>,
-				  <<"value">> =>
-				      list_to_binary(idna:to_ascii(Domain))}
-				|| Domain <- S#state.domains]},
-		  JoseJSON = jose_json(S, Body, S#state.new_order_url),
-		  {post, {S#state.new_order_url, [],
-			  "application/jose+json", JoseJSON}}
-	  end,
+        Body = #{
+            <<"identifiers">> =>
+                [
+                    #{
+                        <<"type">> => <<"dns">>,
+                        <<"value">> =>
+                            list_to_binary(idna:to_ascii(Domain))
+                    }
+                 || Domain <- S#state.domains
+                ]
+        },
+        JoseJSON = jose_json(S, Body, S#state.new_order_url),
+        {post, {S#state.new_order_url, [], "application/jose+json", JoseJSON}}
+    end,
     case http_request(State, Req) of
-	{ok, Reply, State1} ->
-	    handle_order_response(Reply, State1);
-	Err ->
-	    Err
+        {ok, Reply, State1} ->
+            handle_order_response(Reply, State1);
+        Err ->
+            Err
     end.
 
 -spec request_domain_auth(state(), [string()]) ->
-				 {ok, state(), [{domain(), p1_acme_codec:challenge_obj()}]} |
-				 error_return().
+    {ok, state(), [{domain(), challenge_obj()}]}
+    | error_return().
 request_domain_auth(State, AuthURLs) ->
     request_domain_auth(State, AuthURLs, []).
 
--spec request_domain_auth(state(), [string()],
-			  [{domain(), p1_acme_codec:challenge_obj()}]) ->
-				 {ok, state(), [{domain(), p1_acme_codec:challenge_obj()}]} |
-				 error_return().
-request_domain_auth(State, [URL|URLs], Challenges) ->
+-spec request_domain_auth(
+    state(),
+    [string()],
+    [{domain(), challenge_obj()}]
+) ->
+    {ok, state(), [{domain(), challenge_obj()}]}
+    | error_return().
+request_domain_auth(State, [URL | URLs], Challenges) ->
     Req = fun(S) ->
-		  JoseJSON = jose_json(S, <<>>, URL),
-		  {post, {URL, [], "application/jose+json", JoseJSON}}
-	  end,
+        JoseJSON = jose_json(S, <<>>, URL),
+        {post, {URL, [], "application/jose+json", JoseJSON}}
+    end,
     case http_request(State, Req) of
-	{ok, Reply, State1} ->
-	    case handle_domain_auth_response(Reply, State1) of
-		{ok, Challenge} ->
-		    request_domain_auth(State1, URLs, [Challenge|Challenges]);
-		Err ->
-		    Err
-	    end;
-	Err ->
-	    Err
+        {ok, Reply, State1} ->
+            case handle_domain_auth_response(Reply, State1) of
+                {ok, Challenge} ->
+                    request_domain_auth(State1, URLs, [Challenge | Challenges]);
+                Err ->
+                    Err
+            end;
+        Err ->
+            Err
     end;
 request_domain_auth(State, [], Challenges) ->
     {ok, State, Challenges}.
 
--spec request_challenges(state(), [{domain(), p1_acme_codec:challenge_obj()}]) -> issue_return().
+-spec request_challenges(state(), [{domain(), challenge_obj()}]) -> issue_return().
 request_challenges(State, Challenges) ->
-    {Pending, _InProgress, _Valid, Invalid} = split_challenges(Challenges),
-    case Invalid of
-	[{Domain, Challenge}|_] ->
-	    Reason = maps:get(error, Challenge, undefined),
-	    mk_error({challenge_failed, Domain, Reason});
-	[] ->
-	    case Pending of
-		[_|_] ->
-		    Args = lists:map(
-			     fun({Domain, #{token := Token}}) ->
-				     #{domain => Domain,
-				       key => auth_key(State, Token),
-				       token => Token}
-			     end, Pending),
-		    (State#state.challenge_fun)(Args);
-		[] ->
-		    ok
-	    end,
-	    case lists:foldl(
-		   fun(_, {error, _} = Err) ->
-			   Err;
-		      ({_, C}, S) ->
-			   request_challenge(S, C)
-		   end, State, Pending) of
-		{error, Reason} -> {error, Reason};
-		State1 -> poll(State1)
-	    end
+    Groups = group_challenges(Challenges),
+    request_challenges2(State, Groups).
+
+request_challenges2(_State, #{<<"invalid">> := [{Domain, Challenge} | _]}) ->
+    Reason = maps:get(<<"error">>, Challenge, undefined),
+    mk_error({challenge_failed, Domain, Reason});
+request_challenges2(State, #{<<"pending">> := []}) ->
+    %% no pending challenges, proceed to certificate request
+    poll(State);
+request_challenges2(State, #{<<"pending">> := Pendings}) ->
+    %% Call challenge_fun to prepare for challenges
+    Args = lists:map(
+        fun({Domain, #{<<"token">> := Token}}) ->
+            #{
+                <<"domain">> => Domain,
+                <<"key">> => auth_key(State, Token),
+                <<"token">> => Token
+            }
+        end,
+        Pendings
+    ),
+    case apply_challenge_fun(State, Args) of
+        ok ->
+            request_challenges3(State, Pendings);
+        {error, Reason} ->
+            mk_error({challenge_fun_failed, Reason})
+    end.
+apply_challenge_fun(#state{challenge_fun = F}, Args) ->
+    try
+        case F(Args) of
+            ok ->
+                ok;
+            {error, Reason} ->
+                mk_error({challenge_fun_failed, Reason})
+        end
+    catch
+        E:C:Stack ->
+            mk_error({challenge_fun_failed, {E, C, Stack}})
     end.
 
--spec request_challenge(state(), p1_acme_codec:challenge_obj()) -> state() | error_return().
-request_challenge(State, #{url := URL0}) ->
+request_challenges3(State, []) ->
+    poll(State);
+request_challenges3(State, [Pending | Pendings]) ->
+    case request_challenge(State, Pending) of
+        {ok, _, State1} ->
+            request_challenges3(State1, Pendings);
+        {error, _} = Err ->
+            Err
+    end.
+
+request_challenge(State, {_Domain, #{<<"url">> := URL0}}) ->
     URL = binary_to_list(URL0),
     Req = fun(S) ->
-		  JoseJSON = jose_json(S, #{}, URL),
-		  {post, {URL, [], "application/jose+json", JoseJSON}}
-	  end,
-    case http_request(State, Req) of
-	{ok, _Reply, State1} ->
-	    State1;
-	Err ->
-	    Err
-    end.
+        JoseJSON = jose_json(S, #{}, URL),
+        {post, {URL, [], "application/jose+json", JoseJSON}}
+    end,
+    http_request(State, Req).
 
 -spec request_certificate(state(), string()) -> issue_return().
 request_certificate(State, URL) ->
     {DerCSR, State1} = generate_csr(State),
     Body = #{<<"csr">> => base64url:encode(DerCSR)},
     Req = fun(S) ->
-		  JoseJSON = jose_json(S, Body, URL),
-		  {post, {URL, [], "application/jose+json", JoseJSON}}
-	  end,
+        JoseJSON = jose_json(S, Body, URL),
+        {post, {URL, [], "application/jose+json", JoseJSON}}
+    end,
     case http_request(State1, Req) of
-	{ok, Reply, State2} ->
-	    handle_order_response(Reply, State2);
-	Err ->
-	    Err
+        {ok, Reply, State2} ->
+            handle_order_response(Reply, State2);
+        Err ->
+            Err
     end.
 
 -spec revoke_certificate(state()) -> revoke_return().
-revoke_certificate(#state{revoke_url = URL,
-			  cert_key = CertKey,
-			  cert = Cert} = State) ->
+revoke_certificate(
+    #state{
+        revoke_url = URL,
+        cert_key = CertKey,
+        cert = Cert
+    } = State
+) ->
     DerCert = public_key:pkix_encode('OTPCertificate', Cert, otp),
     Body = #{<<"certificate">> => base64url:encode(DerCert)},
     State1 = State#state{account = {CertKey, undefined}},
     Req = fun(S) ->
-		  JoseJSON = jose_json(S, Body, URL),
-		  {post, {URL, [], "application/jose+json", JoseJSON}}
-	  end,
+        JoseJSON = jose_json(S, Body, URL),
+        {post, {URL, [], "application/jose+json", JoseJSON}}
+    end,
     case http_request(State1, Req) of
-	{ok, _, _} ->
-	    ok;
-	Err ->
-	    Err
+        {ok, _, _} -> ok;
+        Err -> Err
     end.
 
 -spec request_pem_file(state(), string()) -> issue_return().
 request_pem_file(State, URL) ->
     Req = fun(S) ->
-		  JoseJSON = jose_json(S, <<>>, URL),
-		  {post, {URL, [], "application/jose+json", JoseJSON}}
-	  end,
+        JoseJSON = jose_json(S, <<>>, URL),
+        {post, {URL, [], "application/jose+json", JoseJSON}}
+    end,
     case http_request(State, Req) of
-	{ok, Reply, State1} ->
-	    handle_pem_file_response(Reply, URL, State1);
-	Err ->
-	    Err
+        {ok, Reply, State1} ->
+            handle_pem_file_response(Reply, URL, State1);
+        Err ->
+            Err
     end.
 
 -spec poll(state()) -> issue_return().
@@ -440,14 +529,14 @@ poll(State) ->
 -spec poll(state(), non_neg_integer()) -> issue_return().
 poll(#state{order_url = URL} = State, Timeout) ->
     Req = fun(S) ->
-		  JoseJSON = jose_json(S, <<>>, URL),
-		  {post, {URL, [], "application/jose+json", JoseJSON}}
-	  end,
+        JoseJSON = jose_json(S, <<>>, URL),
+        {post, {URL, [], "application/jose+json", JoseJSON}}
+    end,
     case http_request(State, Req) of
-	{ok, Reply, State1} ->
-	    handle_poll_response(Reply, State1, Timeout);
-	Err ->
-	    Err
+        {ok, Reply, State1} ->
+            handle_poll_response(Reply, State1, Timeout);
+        Err ->
+            Err
     end.
 
 %%%===================================================================
@@ -455,284 +544,434 @@ poll(#state{order_url = URL} = State, Timeout) ->
 %%%===================================================================
 -spec handle_directory_response(http_json(), state()) -> acme_return().
 handle_directory_response({_, _Hdrs, JSON}, State) ->
-    case p1_acme_codec:decode_dir_obj(JSON) of
-	{ok, #{newNonce := NonceURL,
-	       newAccount := AccURL,
-	       newOrder := OrderURL,
-	       revokeCert := RevokeURL}} ->
-	    State1 = State#state{new_nonce_url = binary_to_list(NonceURL),
-				 new_acc_url = binary_to_list(AccURL),
-				 new_order_url = binary_to_list(OrderURL),
-				 revoke_url = binary_to_list(RevokeURL)},
-	    request_new_nonce(State1);
-	Err ->
-	    mk_codec_error(Err, JSON)
+    case JSON of
+        #{
+            <<"newNonce">> := NonceURL,
+            <<"newAccount">> := AccURL,
+            <<"newOrder">> := OrderURL,
+            <<"revokeCert">> := RevokeURL
+        } ->
+            State1 = State#state{
+                new_nonce_url = binary_to_list(NonceURL),
+                new_acc_url = binary_to_list(AccURL),
+                new_order_url = binary_to_list(OrderURL),
+                revoke_url = binary_to_list(RevokeURL)
+            },
+            request_new_nonce(State1);
+        _ ->
+            mk_error({bad_directory_response, JSON})
     end.
 
 -spec handle_nonce_response(http_json(), state()) -> acme_return().
 handle_nonce_response({_, Hdrs, _}, State) ->
     case lists:keyfind("replay-nonce", 1, Hdrs) of
-	{_, Nonce} ->
-	    State1 = State#state{nonce = iolist_to_binary(Nonce)},
-	    case State1#state.command of
-		issue -> request_new_account(State1);
-		revoke -> revoke_certificate(State1)
-	    end;
-	false ->
-	    mk_http_error({missing_header, 'Replay-Nonce'})
+        {_, Nonce} ->
+            State1 = State#state{nonce = iolist_to_binary(Nonce)},
+            case State1#state.retry_request of
+                undefined ->
+                    % Initial nonce request - proceed with normal flow
+                    case State1#state.command of
+                        issue -> request_new_account(State1);
+                        revoke -> revoke_certificate(State1)
+                    end;
+                {ReqFun, RetryTimeout} ->
+                    % BadNonce retry - retry the original request
+                    http_request(State1, ReqFun, RetryTimeout)
+            end;
+        false ->
+            mk_http_error({missing_header, 'Replay-Nonce'})
     end.
 
 -spec handle_account_response(http_json(), state()) -> issue_return().
 handle_account_response({_, Hdrs, JSON}, State) ->
     case find_location(Hdrs) of
-	undefined ->
-	    mk_http_error({missing_header, 'Location'});
-	AccURL ->
-	    case p1_acme_codec:decode_acc_obj(JSON) of
-		{ok, _} ->
-		    {AccKey, _} = State#state.account,
-		    State1 = State#state{account = {AccKey, AccURL}},
-		    request_new_order(State1);
-		Err ->
-		    mk_codec_error(Err, JSON)
-	    end
+        undefined ->
+            mk_http_error({missing_header, 'Location'});
+        AccURL ->
+            case is_valid_account(JSON) of
+                true ->
+                    {AccKey, _} = State#state.account,
+                    State1 = State#state{account = {AccKey, AccURL}},
+                    request_new_order(State1);
+                false ->
+                    mk_error({bad_account_response, JSON})
+            end
+    end.
+
+is_valid_account(#{<<"status">> := <<"valid">>} = JSON) ->
+    false =/= maps:get(<<"termsOfServiceAgreed">>, JSON, undefined);
+is_valid_account(_) ->
+    false.
+
+-spec is_valid_order(map()) -> boolean().
+is_valid_order(JSON) ->
+    case JSON of
+        #{
+            <<"status">> := Status,
+            <<"identifiers">> := [_ | _],
+            <<"authorizations">> := [_ | _]
+        } ->
+            %% TODO: check expires, notBefore, notAfter timestamps
+            lists:member(Status, [
+                <<"pending">>, <<"ready">>, <<"processing">>, <<"valid">>, <<"invalid">>
+            ]);
+        _ ->
+            false
+    end.
+
+-spec is_valid_auth(map()) -> boolean().
+is_valid_auth(JSON) ->
+    case JSON of
+        #{
+            <<"identifier">> := #{<<"type">> := <<"dns">>, <<"value">> := _},
+            <<"status">> := Status,
+            <<"challenges">> := [_ | _]
+        } ->
+            %% TODO: check expires timestamp
+            lists:member(Status, [
+                <<"pending">>,
+                <<"valid">>,
+                <<"invalid">>,
+                <<"deactivated">>,
+                <<"expired">>,
+                <<"revoked">>
+            ]);
+        _ ->
+            false
     end.
 
 -spec handle_order_response(http_json(), state()) -> issue_return().
 handle_order_response({_, Hdrs, JSON}, State) ->
     case find_location(Hdrs, State#state.order_url) of
-	undefined ->
-	    mk_http_error({missing_header, 'Location'});
-	OrderURL ->
-	    case p1_acme_codec:decode_order_obj(JSON) of
-		{ok, #{status := ready,
-		       finalize := FinURL}} ->
-		    request_certificate(State, binary_to_list(FinURL));
-		{ok, #{status := valid,
-		       certificate := CertURL}} ->
-		    request_pem_file(State, binary_to_list(CertURL));
-		{ok, #{authorizations := AuthURLs}} ->
-		    State1 = State#state{order_url = OrderURL},
-		    case request_domain_auth(
-			   State1, lists:map(fun binary_to_list/1, AuthURLs)) of
-			{ok, State2, Challenges} ->
-			    request_challenges(State2, Challenges);
-			Err ->
-			    Err
-		    end;
-		Err ->
-		    mk_codec_error(Err, JSON)
-	    end
+        undefined ->
+            mk_http_error({missing_header, 'Location'});
+        OrderURL ->
+            case is_valid_order(JSON) andalso JSON of
+                #{
+                    <<"status">> := <<"ready">>,
+                    <<"finalize">> := FinURL
+                } ->
+                    request_certificate(State, binary_to_list(FinURL));
+                #{
+                    <<"status">> := <<"valid">>,
+                    <<"certificate">> := CertURL
+                } ->
+                    request_pem_file(State, binary_to_list(CertURL));
+                #{
+                    <<"status">> := <<"pending">>,
+                    <<"authorizations">> := AuthURLs
+                } ->
+                    State1 = State#state{order_url = OrderURL},
+                    case
+                        request_domain_auth(
+                            State1, lists:map(fun binary_to_list/1, AuthURLs)
+                        )
+                    of
+                        {ok, State2, Challenges} ->
+                            request_challenges(State2, Challenges);
+                        Err ->
+                            Err
+                    end;
+                #{
+                    <<"status">> := <<"processing">>
+                } ->
+                    State1 = State#state{order_url = OrderURL},
+                    poll(State1);
+                false ->
+                    mk_error({bad_order_response, JSON})
+            end
     end.
 
 -spec handle_domain_auth_response(http_json(), state()) ->
-					 {ok, {domain(), p1_acme_codec:challenge_obj()}} |
-					 error_return().
+    {ok, {domain(), challenge_obj()}}
+    | error_return().
 handle_domain_auth_response({_, _Hdrs, JSON}, State) ->
-    case p1_acme_codec:decode_auth_obj(JSON) of
-	{ok, #{challenges := Challenges,
-	       identifier := #{value := D}}} ->
-	    Domain = idna:to_unicode(binary_to_list(D)),
-	    case lists:dropwhile(
-		   fun(#{type := T}) ->
-			   T /= State#state.challenge_type
-		   end, Challenges) of
-		[Challenge|_] -> {ok, {Domain, Challenge}};
-		[] ->
-		    Types = [binary_to_list(maps:get(type, C))
-			     || C <- Challenges],
-		    mk_error({unsupported_challenges, Domain, Types})
-	    end;
-	Err ->
-	    mk_codec_error(Err, JSON)
+    case is_valid_auth(JSON) andalso JSON of
+        #{
+            <<"challenges">> := Challenges,
+            <<"identifier">> := #{<<"value">> := D}
+        } ->
+            Domain = idna:to_unicode(binary_to_list(D)),
+            case
+                lists:dropwhile(
+                    fun(#{<<"type">> := T}) ->
+                        T /= State#state.challenge_type
+                    end,
+                    Challenges
+                )
+            of
+                [Challenge | _] ->
+                    {ok, {Domain, Challenge}};
+                [] ->
+                    Types = [
+                        binary_to_list(maps:get(<<"type">>, C))
+                     || C <- Challenges
+                    ],
+                    mk_error({unsupported_challenges, Domain, Types})
+            end;
+        false ->
+            mk_error({bad_auth_response, JSON})
     end.
 
 -spec handle_poll_response(http_json(), state(), non_neg_integer()) -> issue_return().
 handle_poll_response({_, _, JSON} = Response, State, Timeout) ->
-    case p1_acme_codec:decode_order_obj(JSON) of
-	{ok, #{status := Status}} when Status == pending;
-				       Status == processing ->
-	    Timeout1 = min(Timeout, get_timeout(State)),
-	    timer:sleep(Timeout1),
-	    poll(State, Timeout1*2);
-	{ok, _} ->
-	    handle_order_response(Response, State);
-	Err ->
-	    mk_codec_error(Err, JSON)
+    case JSON of
+        #{<<"status">> := Status} when
+            Status == <<"pending">>;
+            Status == <<"processing">>
+        ->
+            Timeout1 = min(Timeout, get_timeout(State)),
+            timer:sleep(Timeout1),
+            poll(State, Timeout1 * 2);
+        #{<<"status">> := Status} when
+            Status == <<"ready">>;
+            Status == <<"valid">>;
+            Status == <<"invalid">>
+        ->
+            handle_order_response(Response, State);
+        Other ->
+            mk_error({bad_poll_response, Other})
     end.
 
 -spec handle_pem_file_response(http_bin(), string(), state()) -> issue_return().
-handle_pem_file_response({_, _, CertPEM}, URL,
-			 #state{cert_key = CertKey,
-				ca_certs = CaCerts,
-				account = {AccKey, _}}) ->
-    try lists:map(
-	  fun({'Certificate', DER, not_encrypted}) -> DER end,
-	  public_key:pem_decode(CertPEM)) of
-	DERs ->
-	    try lists:map(
-		  fun(DER) ->
-			  public_key:pkix_decode_cert(DER, otp)
-		  end, DERs) of
-		[] ->
-		    mk_error({bad_cert, empty_chain});
-		CertChain ->
-		    {SortedCertChain, SortedDERs} = sort_cert_chain(CertChain, DERs),
-		    Ret = #{acc_key => AccKey,
-			    cert_key => CertKey,
-			    cert_chain => SortedCertChain},
-		    Ret1 = case CaCerts of
-			       [] -> Ret;
-			       _ ->
-				   Ret#{validation_result =>
-					    validate_cert_chain(
-					      SortedCertChain, SortedDERs, CertKey, CaCerts)}
-			   end,
-		    {ok, Ret1}
-	    catch _:_ ->
-		    mk_error({bad_der, URL})
-	    end
-    catch _:_ ->
-	    mk_error({bad_pem, URL})
+handle_pem_file_response(
+    {_, _, CertPEM},
+    URL,
+    #state{
+        cert_key = CertKey,
+        ca_certs = CaCerts,
+        account = {AccKey, _}
+    }
+) ->
+    try
+        lists:map(
+            fun({'Certificate', DER, not_encrypted}) -> DER end,
+            public_key:pem_decode(CertPEM)
+        )
+    of
+        DERs ->
+            try
+                lists:map(
+                    fun(DER) ->
+                        public_key:pkix_decode_cert(DER, otp)
+                    end,
+                    DERs
+                )
+            of
+                [] ->
+                    mk_error({bad_cert, empty_chain});
+                CertChain ->
+                    {SortedCertChain, SortedDERs} = sort_cert_chain(CertChain, DERs),
+                    Ret = #{
+                        acc_key => AccKey,
+                        cert_key => CertKey,
+                        cert_chain => SortedCertChain
+                    },
+                    Ret1 =
+                        case CaCerts of
+                            [] ->
+                                Ret;
+                            _ ->
+                                Ret#{
+                                    validation_result =>
+                                        validate_cert_chain(
+                                            SortedCertChain, SortedDERs, CertKey, CaCerts
+                                        )
+                                }
+                        end,
+                    {ok, Ret1}
+            catch
+                _:_ ->
+                    mk_error({bad_der, URL})
+            end
+    catch
+        _:_ ->
+            mk_error({bad_pem, URL})
     end.
 
 %%%===================================================================
 %%% HTTP request
 %%%===================================================================
 -spec http_request(state(), http_req_fun()) ->
-			  {ok, http_json() | http_bin(), state()} | error_return().
+    {ok, http_json() | http_bin(), state()} | error_return().
 http_request(State, ReqFun) ->
     http_request(State, ReqFun, ?RETRY_TIMEOUT).
 
 -spec http_request(state(), http_req_fun(), non_neg_integer()) ->
-			  {ok, http_json() | http_bin(), state()} | error_return().
+    {ok, http_json() | http_bin(), state()} | error_return().
 http_request(State, ReqFun, RetryTimeout) ->
     case get_timeout(State) of
-	0 ->
-	    mk_http_error(etimedout);
-	Timeout ->
-	    {Method, URL} = Request = ReqFun(State),
-	    ?DEBUG("HTTP request: ~p", [Request]),
-	    case httpc:request(Method, URL,
-			       [{timeout, infinity},
-				{connect_timeout, infinity}],
-			       [{body_format, binary},
-				{sync, false}], ?MODULE) of
-		{ok, Ref} ->
-		    ReqTimeout = min(timer:seconds(10), Timeout),
-		    receive
-			{http, {Ref, Response}} ->
-			    ?DEBUG("HTTP response: ~p", [Response]),
-			    handle_http_response(
-			      ReqFun, Response, State, RetryTimeout)
-		    after ReqTimeout ->
-			    ?DEBUG("HTTP request timeout", []),
-			    httpc:cancel_request(Ref, ?MODULE),
-			    http_request(State, ReqFun, RetryTimeout)
-		    end;
-		{error, WTF} ->
-		    mk_http_error(WTF)
-	    end
+        0 ->
+            mk_http_error(etimedout);
+        Timeout ->
+            {Method, URL} = Request = ReqFun(State),
+            ?DEBUG("HTTP request: ~p", [Request]),
+            case
+                httpc:request(
+                    Method,
+                    URL,
+                    [
+                        {timeout, infinity},
+                        {ssl, [{verify, verify_none}]},
+                        {connect_timeout, infinity}
+                    ],
+                    [
+                        {body_format, binary},
+                        {sync, false}
+                    ],
+                    ?MODULE
+                )
+            of
+                {ok, Ref} ->
+                    ReqTimeout = min(timer:seconds(10), Timeout),
+                    receive
+                        {http, {Ref, Response}} ->
+                            ?DEBUG("HTTP response: ~p", [Response]),
+                            handle_http_response(
+                                ReqFun, Response, State, RetryTimeout
+                            )
+                    after ReqTimeout ->
+                        ?DEBUG("HTTP request timeout", []),
+                        httpc:cancel_request(Ref, ?MODULE),
+                        http_request(State, ReqFun, RetryTimeout)
+                    end;
+                {error, WTF} ->
+                    mk_http_error(WTF)
+            end
     end.
 
 -spec http_retry(state(), http_req_fun(), non_neg_integer(), error_reason()) ->
-			{ok, http_json() | http_bin(), state()} | error_return().
+    {ok, http_json() | http_bin(), state()} | error_return().
 http_retry(State, ReqFun, RetryTimeout, Reason) ->
     case {need_retry(Reason), get_timeout(State)} of
-	{true, Timeout} when Timeout > RetryTimeout ->
-	    timer:sleep(RetryTimeout),
-	    http_request(State, ReqFun, RetryTimeout*2);
-	_ ->
-	    mk_error(Reason)
+        {true, Timeout} when Timeout > RetryTimeout ->
+            timer:sleep(RetryTimeout),
+            % Get a new nonce before retrying
+            case request_new_nonce(State#state{retry_request = {ReqFun, RetryTimeout}}) of
+                {ok, _, State1} ->
+                    http_request(State1, ReqFun, RetryTimeout * 2);
+                {error, _} = Err ->
+                    Err
+            end;
+        _ ->
+            mk_error(Reason)
     end.
 
 -spec need_retry(error_reason()) -> boolean().
 need_retry({http_error, {inet, Reason}}) ->
-    case Reason of
-	ehostdown -> true;
-	ehostunreach -> true;
-	enetdown -> true;
-	enetreset -> true;
-	enetunreach -> true;
-	etimedout -> true;
-	erefused -> true;
-	econnrefused -> true;
-	econnreset -> true;
-	_ -> false
-    end;
-need_retry({http_error, {code, Code, _}}) when Code >= 500, Code < 600 -> true;
-need_retry({problem_report, #{type := Type}})
-  when Type == badNonce; Type == serverInternal ->
+    lists:member(Reason, ?RETRIABLE_INET_REASONS);
+need_retry({http_error, {code, Code, _}}) ->
+    Code >= 500 andalso Code < 600;
+need_retry({retryable, _}) ->
     true;
-need_retry({problem_report, #{status := Code}})
-  when Code >= 500, Code < 600 ->
-    true;
-need_retry(_) -> false.
+need_retry(_) ->
+    false.
 
 %%%===================================================================
 %%% HTTP response processing
 %%%===================================================================
--spec handle_http_response(http_req_fun(),
-			   {{_, 100..699, string()}, [http_header()], binary()} | term(),
-			   state(), non_neg_integer()) ->
-				  {ok, http_json() | http_bin(), state()} | error_return().
+-spec handle_http_response(
+    http_req_fun(),
+    {{_, 100..699, string()}, [http_header()], binary()} | term(),
+    state(),
+    non_neg_integer()
+) ->
+    {ok, http_json() | http_bin(), state()} | error_return().
 handle_http_response(ReqFun, {{_, Code, Slogan}, Hdrs, Body}, State, RetryTimeout) ->
     case lists:keyfind("content-type", 1, Hdrs) of
-	{_, Type} when Type == "application/problem+json";
-		       Type == "application/json" ->
-	    State1 = update_nonce(Hdrs, State),
-	    try json_decode_maps(Body) of
-		JSON when Type == "application/json" ->
-		    {ok, {Code, Hdrs, JSON}, State1};
-		JSON when Type == "application/problem+json" ->
-		    case p1_acme_codec:decode_err_obj(JSON) of
-			{ok, ErrObj} ->
-			    http_retry(State1, ReqFun, RetryTimeout,
-				       {problem_report, ErrObj});
-			Err ->
-			    mk_codec_error(Err, JSON)
-		    end
-	    catch _:_ ->
-		    mk_error({bad_json, Body})
-	    end;
-	{_, Type} when Code >= 200, Code < 300 ->
-	    case Type of
-		"application/pem-certificate-chain" ->
-		    {ok, {Code, Hdrs, Body}, State};
-		_ ->
-		    mk_http_error({unexpected_content_type, Type})
-	    end;
-	false when Code >= 200, Code < 300 ->
-	    case Body of
-		<<>> ->
-		    {ok, {Code, Hdrs, #{}}, State};
-		_ ->
-		    mk_http_error({missing_header, 'Content-Type'})
-	    end;
-	_ when Code >= 500, Code < 600 ->
-	    http_retry(State, ReqFun, RetryTimeout,
-		       prep_http_error({code, Code, Slogan}));
-	_ ->
-	    mk_http_error({code, Code, Slogan})
+        {_, Type} ->
+            handle_http_response2(ReqFun, Code, Slogan, Hdrs, Body, State, RetryTimeout, Type);
+        false when Code >= 200, Code < 300 ->
+            case Body of
+                <<>> ->
+                    {ok, {Code, Hdrs, #{}}, State};
+                _ ->
+                    mk_http_error({missing_header, 'Content-Type'})
+            end;
+        _ when Code >= 500, Code < 600 ->
+            http_retry(
+                State,
+                ReqFun,
+                RetryTimeout,
+                prep_http_error({code, Code, Slogan})
+            );
+        _ ->
+            mk_http_error({code, Code, Slogan})
     end;
 handle_http_response(ReqFun, {error, Reason}, State, RetryTimeout) ->
     http_retry(State, ReqFun, RetryTimeout, prep_http_error(Reason));
 handle_http_response(ReqFun, Term, State, RetryTimeout) ->
     http_retry(State, ReqFun, RetryTimeout, prep_http_error(Term)).
 
+handle_http_response2(
+    _ReqFun,
+    Code,
+    _Slogan,
+    Hdrs,
+    Body,
+    State,
+    _RetryTimeout,
+    "application/pem-certificate-chain" ++ _
+) when Code >= 200, Code < 300 ->
+    {ok, {Code, Hdrs, Body}, State};
+handle_http_response2(ReqFun, Code, _Slogan, Hdrs, Body, State, RetryTimeout, Type) when
+    Code =< 400
+->
+    {IsValidType, IsProblem} =
+        case Type of
+            "application/problem+json" ++ _ ->
+                {true, true};
+            "application/json" ++ _ ->
+                {true, false};
+            _ ->
+                {false, false}
+        end,
+    case IsValidType of
+        true ->
+            State1 = update_nonce(Hdrs, State),
+            try
+                JSON = json_decode_maps(Body),
+                ?DEBUG("JSON = ~p~n", [JSON]),
+                case IsProblem of
+                    true ->
+                        case JSON of
+                            #{<<"type">> := <<"urn:ietf:params:acme:error:badNonce">>} ->
+                                http_retry(
+                                    State1,
+                                    ReqFun,
+                                    RetryTimeout,
+                                    {retryable, "badNonce"}
+                                );
+                            _ ->
+                                mk_error({bad_response, JSON})
+                        end;
+                    false ->
+                        {ok, {Code, Hdrs, JSON}, State1}
+                end
+            catch
+                C:E:Stack ->
+                    ?DEBUG("C:E:Stack = ~p~n", [{C, E, Stack}]),
+                    mk_error({bad_json, Body})
+            end;
+        false ->
+            mk_http_error({unexpected_content_type, Type})
+    end;
+handle_http_response2(_ReqFun, Code, _Slogan, Hdrs, Body, _State, _RetryTimeout, Type) ->
+    mk_http_error({unexpected_response, Code, Type, Hdrs, Body}).
+
 prep_http_error({failed_connect, List} = Reason) when is_list(List) ->
     {http_error,
-     case lists:keyfind(inet, 1, List) of
-	 {_, _, Why} when is_atom(Why) ->
-	     {inet,
-	      case Why of
-		  timeout -> etimedout;
-		  closed -> econnreset;
-		  _ -> Why
-	      end};
-	 _ ->
-	     Reason
-     end};
+        case lists:keyfind(inet, 1, List) of
+            {_, _, Why} when is_atom(Why) ->
+                {inet,
+                    case Why of
+                        timeout -> etimedout;
+                        closed -> econnreset;
+                        _ -> Why
+                    end};
+            _ ->
+                Reason
+        end};
 prep_http_error(socket_closed_remotely) ->
     {http_error, {inet, econnreset}};
 prep_http_error(Reason) ->
@@ -741,10 +980,11 @@ prep_http_error(Reason) ->
 -spec update_nonce([http_header()], state()) -> state().
 update_nonce(Hdrs, State) ->
     case lists:keyfind("replay-nonce", 1, Hdrs) of
-	{_, Nonce} ->
-	    State#state{nonce = iolist_to_binary(Nonce)};
-	false ->
-	    State
+        {_, Nonce} ->
+            ?DEBUG("Next nonce: ~p", [Nonce]),
+            State#state{nonce = iolist_to_binary(Nonce)};
+        false ->
+            State
     end.
 
 %%%===================================================================
@@ -757,52 +997,70 @@ generate_key(rsa) ->
     public_key:generate_key({rsa, 2048, 65537}).
 
 -spec generate_csr([domain(), ...], priv_key()) -> #'CertificationRequest'{}.
-generate_csr([_|_] = Domains, PrivKey) ->
+generate_csr([_ | _] = Domains, PrivKey) ->
     SignAlgoOID = signature_algorithm(PrivKey),
     PubKey = pubkey_from_privkey(PrivKey),
     {DigestType, _} = public_key:pkix_sign_types(SignAlgoOID),
     DerParams = der_params(PrivKey),
     DerSAN = public_key:der_encode(
-	       'SubjectAltName',
-	       [{dNSName, idna:to_ascii(Domain)} || Domain <- Domains]),
-    Extns = [#'Extension'{extnID = ?'id-ce-subjectAltName',
-			  critical = false,
-			  extnValue = DerSAN}],
+        'SubjectAltName',
+        [{dNSName, idna:to_ascii(Domain)} || Domain <- Domains]
+    ),
+    Extns = [
+        #'Extension'{
+            extnID = ?'id-ce-subjectAltName',
+            critical = false,
+            extnValue = DerSAN
+        }
+    ],
     DerExtnReq = public_key:der_encode('ExtensionRequest', Extns),
-    Attribute = #'AttributePKCS-10'{type = ?'pkcs-9-at-extensionRequest',
-				    values = [{asn1_OPENTYPE, DerExtnReq}]},
+    Attribute = #'AttributePKCS-10'{
+        type = ?'pkcs-9-at-extensionRequest',
+        values = [{asn1_OPENTYPE, DerExtnReq}]
+    },
     SubjPKInfo = #'CertificationRequestInfo_subjectPKInfo'{
-		    subjectPublicKey = subject_pubkey(PubKey),
-		    algorithm =
-			#'CertificationRequestInfo_subjectPKInfo_algorithm'{
-			   algorithm = algorithm(PrivKey),
-			   parameters = {asn1_OPENTYPE, DerParams}}},
+        subjectPublicKey = subject_pubkey(PubKey),
+        algorithm =
+            #'CertificationRequestInfo_subjectPKInfo_algorithm'{
+                algorithm = algorithm(PrivKey),
+                parameters = {asn1_OPENTYPE, DerParams}
+            }
+    },
     CsrInfo = #'CertificationRequestInfo'{
-		 version = v1,
-		 subject = {rdnSequence, []},
-		 subjectPKInfo = SubjPKInfo,
-		 attributes = [Attribute]},
+        version = v1,
+        subject = {rdnSequence, []},
+        subjectPKInfo = SubjPKInfo,
+        attributes = [Attribute]
+    },
     DerCsrInfo = public_key:der_encode('CertificationRequestInfo', CsrInfo),
     Signature = public_key:sign(DerCsrInfo, DigestType, PrivKey),
     #'CertificationRequest'{
-       certificationRequestInfo = CsrInfo,
-       signatureAlgorithm =
-	   #'CertificationRequest_signatureAlgorithm'{
-	      algorithm = SignAlgoOID},
-       signature = Signature}.
+        certificationRequestInfo = CsrInfo,
+        signatureAlgorithm =
+            #'CertificationRequest_signatureAlgorithm'{
+                algorithm = SignAlgoOID
+            },
+        signature = Signature
+    }.
 
 -spec generate_csr(state()) -> {binary(), state()}.
-generate_csr(#state{domains = Domains,
-		    cert_type = Type,
-		    cert_key = Key} = State) ->
-    CertKey = case Key of
-		  undefined -> generate_key(Type);
-		  _ -> Key
-	      end,
+generate_csr(
+    #state{
+        domains = Domains,
+        cert_type = Type,
+        cert_key = Key
+    } = State
+) ->
+    CertKey =
+        case Key of
+            undefined -> generate_key(Type);
+            _ -> Key
+        end,
     CSR = generate_csr(Domains, CertKey),
     ?DEBUG("CSR = ~p", [CSR]),
-    {public_key:der_encode('CertificationRequest', CSR),
-     State#state{cert_type = cert_type(CertKey), cert_key = CertKey}}.
+    {public_key:der_encode('CertificationRequest', CSR), State#state{
+        cert_type = cert_type(CertKey), cert_key = CertKey
+    }}.
 
 -spec cert_type(priv_key()) -> cert_type().
 cert_type(#'RSAPrivateKey'{}) -> rsa;
@@ -819,10 +1077,14 @@ algorithm(#'RSAPrivateKey'{}) ->
     ?'rsaEncryption'.
 
 -spec pubkey_from_privkey(priv_key()) -> pub_key().
-pubkey_from_privkey(#'RSAPrivateKey'{modulus = Modulus,
-				     publicExponent = Exp}) ->
-    #'RSAPublicKey'{modulus = Modulus,
-		    publicExponent = Exp};
+pubkey_from_privkey(#'RSAPrivateKey'{
+    modulus = Modulus,
+    publicExponent = Exp
+}) ->
+    #'RSAPublicKey'{
+        modulus = Modulus,
+        publicExponent = Exp
+    };
 pubkey_from_privkey(#'ECPrivateKey'{publicKey = Key}) ->
     #'ECPoint'{point = Key}.
 
@@ -845,47 +1107,56 @@ pubkey_from_cert(Cert) ->
     SubjPubKey = PubKeyInfo#'OTPSubjectPublicKeyInfo'.subjectPublicKey,
     case PubKeyInfo#'OTPSubjectPublicKeyInfo'.algorithm of
         #'PublicKeyAlgorithm'{
-           algorithm = ?'rsaEncryption'} ->
+            algorithm = ?'rsaEncryption'
+        } ->
             SubjPubKey;
         #'PublicKeyAlgorithm'{
-           algorithm = ?'id-ecPublicKey'} ->
+            algorithm = ?'id-ecPublicKey'
+        } ->
             SubjPubKey
     end.
 
--spec validate_cert_chain([cert(), ...], [binary(), ...], priv_key(), [cert()]) ->
-				 valid | {bad_cert, bad_cert_reason()}.
-validate_cert_chain([Cert|_] = Certs, DerCerts, PrivKey, CaCerts) ->
+-spec validate_cert_chain([cert()], [binary()], priv_key(), [cert()]) ->
+    valid | {bad_cert, bad_cert_reason()}.
+validate_cert_chain([Cert | _] = Certs, DerCerts, PrivKey, CaCerts) ->
     case pubkey_from_privkey(PrivKey) == pubkey_from_cert(Cert) of
-	false -> {bad_cert, key_mismatch};
-	true ->
-	    Last = lists:last(Certs),
-	    case find_issuer_cert(Last, CaCerts) of
-		{ok, CaCert} ->
-		    case public_key:pkix_path_validation(
-			   CaCert, lists:reverse(DerCerts), []) of
-			{ok, _} -> valid;
-			{error, {bad_cert, _} = Reason} -> Reason
-		    end;
-		error ->
-		    case public_key:pkix_is_self_signed(Last) of
-			true ->
-			    {bad_cert, selfsigned_peer};
-			false ->
-			    {bad_cert, unknown_ca}
-		    end
-	    end
+        false ->
+            {bad_cert, key_mismatch};
+        true ->
+            Last = lists:last(Certs),
+            case find_issuer_cert(Last, CaCerts) of
+                {ok, CaCert} ->
+                    case
+                        public_key:pkix_path_validation(
+                            CaCert, lists:reverse(DerCerts), []
+                        )
+                    of
+                        {ok, _} -> valid;
+                        {error, {bad_cert, _} = Reason} -> Reason
+                    end;
+                error ->
+                    case public_key:pkix_is_self_signed(Last) of
+                        true ->
+                            {bad_cert, selfsigned_peer};
+                        false ->
+                            {bad_cert, unknown_ca}
+                    end
+            end
     end.
 
 -spec sort_cert_chain([cert()], [binary()]) -> {[cert()], [binary()]}.
 sort_cert_chain(Certs, DERs) ->
     lists:unzip(
-      lists:sort(
-	fun({Cert1, _}, {Cert2, _}) ->
-		public_key:pkix_is_issuer(Cert1, Cert2)
-	end, lists:zip(Certs, DERs))).
+        lists:sort(
+            fun({Cert1, _}, {Cert2, _}) ->
+                public_key:pkix_is_issuer(Cert1, Cert2)
+            end,
+            lists:zip(Certs, DERs)
+        )
+    ).
 
 -spec find_issuer_cert(cert(), [cert()]) -> {ok, cert()} | error.
-find_issuer_cert(Cert, [IssuerCert|IssuerCerts]) ->
+find_issuer_cert(Cert, [IssuerCert | IssuerCerts]) ->
     case public_key:pkix_is_issuer(Cert, IssuerCert) of
         true -> {ok, IssuerCert};
         false -> find_issuer_cert(Cert, IssuerCerts)
@@ -899,25 +1170,37 @@ find_issuer_cert(_Cert, []) ->
 -spec jose_json(state(), binary() | map(), binary() | string()) -> binary().
 jose_json(State, JSON, URL) when is_map(JSON) ->
     jose_json(State, encode_json(JSON), URL);
+jose_json(#state{nonce = undefined} = State, Data, URL) ->
+    % If we don't have a nonce, request one first
+    case request_new_nonce(State) of
+        {ok, _, State1} ->
+            jose_json(State1, Data, URL);
+        Err ->
+            Err
+    end;
 jose_json(#state{account = {Key, AccURL}, nonce = Nonce} = State, Data, URL) ->
     PrivKey = jose_jwk:from_key(Key),
     PubKey = jose_jwk:to_public(PrivKey),
-    AlgMap = case jose_jwk:signer(PrivKey) of
-		 M when is_record(Key, 'RSAPrivateKey') ->
-		     M#{<<"alg">> => <<"RS256">>};
-		 M ->
-		     M
-	     end,
-    JwsMap0 = #{<<"nonce">> => Nonce,
-		<<"url">> => iolist_to_binary(URL)},
-    JwsMap = case AccURL of
-		 undefined ->
-		     {_, BinaryPubKey} = jose_jwk:to_binary(PubKey),
-		     PubKeyJson = json_decode_maps(BinaryPubKey),
-		     JwsMap0#{<<"jwk">> => PubKeyJson};
-		 _ ->
-		     JwsMap0#{<<"kid">> => iolist_to_binary(AccURL)}
-	     end,
+    AlgMap =
+        case jose_jwk:signer(PrivKey) of
+            M when is_record(Key, 'RSAPrivateKey') ->
+                M#{<<"alg">> => <<"RS256">>};
+            M ->
+                M
+        end,
+    JwsMap0 = #{
+        <<"nonce">> => Nonce,
+        <<"url">> => iolist_to_binary(URL)
+    },
+    JwsMap =
+        case AccURL of
+            undefined ->
+                {_, BinaryPubKey} = jose_jwk:to_binary(PubKey),
+                PubKeyJson = json_decode_maps(BinaryPubKey),
+                JwsMap0#{<<"jwk">> => PubKeyJson};
+            _ ->
+                JwsMap0#{<<"kid">> => iolist_to_binary(AccURL)}
+        end,
     JwsObj = jose_jws:from(maps:merge(JwsMap, AlgMap)),
     ?DEBUG("JOSE payload: ~s~nJOSE protected: ~p", [Data, JwsObj]),
     {_, JoseJSON} = jose_jws:sign(PrivKey, Data, JwsObj),
@@ -932,17 +1215,11 @@ auth_key(#state{account = {PrivKey, _}}, Token) ->
 encode_json(JSON) ->
     json_encode(JSON).
 
--ifdef(OTP_BELOW_27).
-json_encode(Term) ->
-    iolist_to_binary(jiffy:encode(Term)).
-json_decode_maps(Bin) ->
-    jiffy:decode(Bin, [return_maps]).
--else.
 json_encode(Term) ->
     iolist_to_binary(json:encode(Term)).
+
 json_decode_maps(Bin) ->
     json:decode(Bin).
--endif.
 
 %%%===================================================================
 %%% Misc
@@ -950,10 +1227,6 @@ json_decode_maps(Bin) ->
 -spec mk_http_error(term()) -> error_return().
 mk_http_error(Reason) ->
     mk_error({http_error, Reason}).
-
--spec mk_codec_error(yconf:error_return(), map()) -> error_return().
-mk_codec_error({error, Reason, Ctx}, JSON) ->
-    mk_error({codec_error, Reason, Ctx, JSON}).
 
 -spec mk_error(error_reason()) -> error_return().
 mk_error(Reason) ->
@@ -969,64 +1242,84 @@ get_timeout(#state{end_time = EndTime}) ->
 
 -spec check_url(binary() | string()) -> string().
 check_url(S) ->
-    case yconf:validate(yconf:url(), iolist_to_binary(S)) of
-	{ok, URL} -> binary_to_list(URL);
-	_ -> erlang:error(badarg, [S])
-    end.
+    unicode:characters_to_list(S).
 
--spec init_state(issue, binary() | string(), [domain()], priv_key(),
-		 [issue_option()]) -> state();
-		(revoke, binary() | string(), cert(), priv_key(),
-		 [revoke_option()]) -> state().
+-spec init_state
+    (
+        issue,
+        binary() | string(),
+        [domain()],
+        priv_key(),
+        [issue_option()]
+    ) -> state();
+    (
+        revoke,
+        binary() | string(),
+        cert(),
+        priv_key(),
+        [revoke_option()]
+    ) -> state().
 init_state(issue, DirURL, Domains, AccKey, Opts) ->
-    State = #state{command = issue,
-		   dir_url = check_url(DirURL),
-		   domains = Domains,
-		   account = {AccKey, undefined},
-		   contact = [],
-		   cert_type = ec,
-		   ca_certs = [],
-		   challenge_type = <<"http-01">>,
-		   end_time = current_time() + ?DEFAULT_TIMEOUT},
+    State = #state{
+        command = issue,
+        dir_url = check_url(DirURL),
+        domains = Domains,
+        account = {AccKey, undefined},
+        contact = [],
+        cert_type = ec,
+        ca_certs = [],
+        challenge_type = <<"http-01">>,
+        end_time = current_time() + ?DEFAULT_TIMEOUT
+    },
     lists:foldl(
-      fun({timeout, Timeout}, S) when is_integer(Timeout), Timeout > 0 ->
-	      EndTime = current_time() + Timeout,
-	      S#state{end_time = EndTime};
-	 ({contact, Cs}, S) when is_list(Cs) ->
-	      S#state{contact = lists:map(fun iolist_to_binary/1, Cs)};
-	 ({cert_type, T}, S) when T == ec; T == rsa ->
-	      S#state{cert_type = T};
-	 ({cert_key, K}, S) ->
-	      S#state{cert_key = K};
-	 ({ca_certs, L}, S) when is_list(L) ->
-	      S#state{ca_certs = L};
-	 ({challenge_type, 'http-01'}, S) ->
-	      S#state{challenge_type = <<"http-01">>};
-	 ({challenge_fun, Fun}, S) when is_function(Fun, 1) ->
-	      S#state{challenge_fun = Fun};
-	 ({debug_fun, Fun}, S) when is_function(Fun, 2) ->
-	      S#state{debug_fun = Fun};
-	 (Opt, _) ->
-	      erlang:error({bad_option, Opt})
-      end, State, Opts);
+        fun
+            ({timeout, Timeout}, S) when is_integer(Timeout), Timeout > 0 ->
+                EndTime = current_time() + Timeout,
+                S#state{end_time = EndTime};
+            ({contact, Cs}, S) when is_list(Cs) ->
+                S#state{contact = lists:map(fun iolist_to_binary/1, Cs)};
+            ({cert_type, T}, S) when T == ec; T == rsa ->
+                S#state{cert_type = T};
+            ({cert_key, K}, S) ->
+                S#state{cert_key = K};
+            ({ca_certs, L}, S) when is_list(L) ->
+                S#state{ca_certs = L};
+            ({challenge_type, 'http-01'}, S) ->
+                S#state{challenge_type = <<"http-01">>};
+            ({challenge_fun, Fun}, S) when is_function(Fun, 1) ->
+                S#state{challenge_fun = Fun};
+            ({debug_fun, Fun}, S) when is_function(Fun, 2) ->
+                S#state{debug_fun = Fun};
+            (Opt, _) ->
+                erlang:error({bad_option, Opt})
+        end,
+        State,
+        Opts
+    );
 init_state(revoke, DirURL, Cert, CertKey, Opts) ->
-    State = #state{command = revoke,
-		   dir_url = check_url(DirURL),
-		   domains = [],
-		   contact = [],
-		   cert = Cert,
-		   cert_key = CertKey,
-		   ca_certs = [],
-		   end_time = current_time() + ?DEFAULT_TIMEOUT},
+    State = #state{
+        command = revoke,
+        dir_url = check_url(DirURL),
+        domains = [],
+        contact = [],
+        cert = Cert,
+        cert_key = CertKey,
+        ca_certs = [],
+        end_time = current_time() + ?DEFAULT_TIMEOUT
+    },
     lists:foldl(
-      fun({timeout, Timeout}, S) when is_integer(Timeout), Timeout > 0 ->
-	      EndTime = current_time() + Timeout,
-	      S#state{end_time = EndTime};
-	 ({debug_fun, Fun}, S) when is_function(Fun, 2) ->
-	      S#state{debug_fun = Fun};
-	 (Opt, _) ->
-	      erlang:error({bad_option, Opt})
-      end, State, Opts).
+        fun
+            ({timeout, Timeout}, S) when is_integer(Timeout), Timeout > 0 ->
+                EndTime = current_time() + Timeout,
+                S#state{end_time = EndTime};
+            ({debug_fun, Fun}, S) when is_function(Fun, 2) ->
+                S#state{debug_fun = Fun};
+            (Opt, _) ->
+                erlang:error({bad_option, Opt})
+        end,
+        State,
+        Opts
+    ).
 
 -spec find_location([{string(), string()}]) -> string() | undefined.
 find_location(Hdrs) ->
@@ -1035,21 +1328,21 @@ find_location(Hdrs) ->
 -spec find_location([{string(), string()}], T) -> string() | T.
 find_location(Hdrs, Default) ->
     proplists:get_value("location", Hdrs, Default).
+group_challenges(Challenges) ->
+    group_challenges(Challenges, #{
+        <<"pending">> => [], <<"processing">> => [], <<"valid">> => [], <<"invalid">> => []
+    }).
 
--spec split_challenges([{domain(), p1_acme_codec:challenge_obj()}, ...]) ->
-			      {Pending :: [{domain(), p1_acme_codec:challenge_obj()}],
-			       InProgress :: [{domain(), p1_acme_codec:challenge_obj()}],
-			       Valid :: [{domain(), p1_acme_codec:challenge_obj()}],
-			       InValid ::[{domain(), p1_acme_codec:challenge_obj()}]}.
-split_challenges(Challenges) ->
-    split_challenges(Challenges, [], [], [], []).
+group_challenges([], Acc) ->
+    Acc;
+group_challenges([{_, Challenge} = C | Cs], Acc) ->
+    Key = maps:get(<<"status">>, Challenge),
+    Group = maps:get(Key, Acc),
+    group_challenges(Cs, Acc#{Key => [C | Group]}).
 
-split_challenges([{_, Challenge} = C|Cs], Pending, InProgress, Valid, Invalid) ->
-    case maps:get(status, Challenge) of
-	pending -> split_challenges(Cs, [C|Pending], InProgress, Valid, Invalid);
-	processing -> split_challenges(Cs, Pending, [C|InProgress], Valid, Invalid);
-	valid -> split_challenges(Cs, Pending, InProgress, [C|Valid], Invalid);
-	invalid -> split_challenges(Cs, Pending, InProgress, Valid, [C|Invalid])
-    end;
-split_challenges([], Pending, InProgress, Valid, Invalid) ->
-    {Pending, InProgress, Valid, Invalid}.
+-spec get_rfc3339_timestamp() -> string().
+get_rfc3339_timestamp() ->
+    {Date, Time} = calendar:universal_time(),
+    {Y, M, D} = Date,
+    {H, Min, S} = Time,
+    io_lib:format("~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0BZ", [Y, M, D, H, Min, S]).

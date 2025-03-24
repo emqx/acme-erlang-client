@@ -16,3 +16,4 @@ priv
 rebar.lock
 test/*.beam
 vars.config
+*.dump
