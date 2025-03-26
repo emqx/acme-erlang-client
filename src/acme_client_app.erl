@@ -1,6 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @author Evgeny Khramtsov <ekhramtsov@process-one.net>
-%%% @copyright (C) 2002-2024 ProcessOne, SARL. All Rights Reserved.
+%%% @copyright (C) 2025 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -15,29 +14,16 @@
 %%% limitations under the License.
 %%%
 %%%-------------------------------------------------------------------
-{application, p1_acme, [
-    {description, "ACME client"},
-    {vsn, "1.0.25"},
-    {modules, []},
-    {registered, []},
-    {applications, [
-        kernel,
-        stdlib,
-        crypto,
-        inets,
-        public_key,
-        ssl,
-        base64url,
-        idna,
-        jose
-    ]},
-    {env, []},
-    {mod, {p1_acme, []}},
-    {licenses, ["Apache 2.0"]},
-    {links, [{"Github", "https://github.com/zmstone/p1_acme"}]}
-]}.
 
-%% Local Variables:
-%% mode: erlang
-%% End:
-%% vim: set filetype=erlang tabstop=8:
+-module(acme_client_app).
+
+-behaviour(application).
+
+-export([start/2, stop/1]).
+
+start(_StartType, _StartArgs) ->
+    acme_client_httpc:start(),
+    acme_client_sup:start_link().
+
+stop(_State) ->
+    ok.

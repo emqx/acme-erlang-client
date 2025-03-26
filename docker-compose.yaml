@@ -1,0 +1,39 @@
+networks:
+  acme-test:
+    name: acme-test
+    driver: bridge
+
+services:
+  challenge-responder:
+    image: erlang:27
+    container_name: acme-challenge-responder
+    tty: true
+    networks:
+      acme-test:
+        aliases:
+          - "a.local.net"
+          - "b.local.net"
+          - "xn--ojq.local.net" # 甲
+          - "xn--tny.local.net" # 乙
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./:/src
+    command: bash -c 'cp -r /src/ ./app; cd app; rebar3 shell --eval "acme_client_challenge_responder:start([])."'
+    restart: unless-stopped
+
+  pebble:
+    image: letsencrypt/pebble
+    container_name: pebble
+    depends_on:
+      - challenge-responder
+    environment:
+      - PEBBLE_VA_ALWAYS_VALID=0
+      - PEBBLE_VA_NOSLEEP=1
+      - PEBBLE_WFE_NONCEREJECT=0
+    networks:
+      acme-test:
+    ports:
+      - "14000:14000" # Pebble ACME endpoint
+      - "15000:15000" # Management API
+    restart: unless-stopped

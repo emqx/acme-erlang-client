@@ -45,3 +45,17 @@ cover:
 .PHONY: fmt
 fmt:
 	$(REBAR) fmt -w
+
+.PHONY: ct
+ct:
+	$(REBAR) ct -v -c
+
+.PHONY: fmt-check
+fmt-check:
+	$(REBAR) fmt -c
+
+.PHONY: test-env
+test-env:
+	docker compose up -d
+	while ! curl http://localhost:5002/health > /dev/null 2>&1; do sleep 2; echo "waiting for pebble to be ready"; done
+

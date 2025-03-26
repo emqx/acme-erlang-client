@@ -1,11 +1,38 @@
--module(p1_acme_challenge_responder).
+%%%-------------------------------------------------------------------
+%%% @copyright (C) 2025 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%%
+%%% Licensed under the Apache License, Version 2.0 (the "License");
+%%% you may not use this file except in compliance with the License.
+%%% You may obtain a copy of the License at
+%%%
+%%%     http://www.apache.org/licenses/LICENSE-2.0
+%%%
+%%% Unless required by applicable law or agreed to in writing, software
+%%% distributed under the License is distributed on an "AS IS" BASIS,
+%%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%%% See the License for the specific language governing permissions and
+%%% limitations under the License.
+%%%
+%%%-------------------------------------------------------------------
+
+-module(acme_client_challenge_responder).
 -moduledoc """
 This module is used only for testing.
-It starts a dependency-free HTTP server that responds to ACME challenge requests.
+It starts a dependency-free HTTP server that responds to ACME http-01 challenges.
+
+ACME server should send challenges like this command:
+`curl -XGET http://localhost:5002/.well-known/acme-challenge/token1234567890`
+
+To prepare for the challenge, use one of the below methods.
+
+1. Call `challenge_fn/1`
+2. Put the key in file `/tmp/{TOKEN}`
+3. Sned the a POST request like this:
+  `curl -XPOST http://localhost:5002/.well-known/acme-challenge/token1234567890/key1234`
 """.
 
 %% API
--export([challenge_fun/1, start/1, stop/1]).
+-export([challenge_fn/1, start/1, stop/1]).
 
 %% Internal exports
 -export([start_server/2, handle_request/2]).
@@ -32,14 +59,14 @@ The input is a list of maps like:
 ```
 [
     #{
-        <<"domain">> => <<"local.host">>,
-        <<"token">> => <<"1234567890">>,
-        <<"key">> => <<"1234567890">>
+        domain => <<"local.host">>,
+        token => <<"1234567890">>,
+        key => <<"1234567890">>
     }
 ]
 ```
 """.
-challenge_fun(Challenges) ->
+challenge_fn(Challenges) ->
     ok = insert_challenges(Challenges).
 
 start(Challenges) ->
@@ -134,11 +161,23 @@ receive_request(Socket) ->
             {error, Reason}
     end.
 
-handle_request(Socket, Method, {abs_path, Path}, Version) ->
-    case {Method, Path} of
-        {'GET', "/.well-known/acme-challenge/" ++ Token} ->
+handle_request(Socket, 'POST', {abs_path, Path}, Version) ->
+    case Path of
+        "/.well-known/acme-challenge/" ++ TokenKey ->
+            io:format("[RESPONDER] Challenge POST for token/key: ~p~n", [TokenKey]),
+            [Token, Key] = binary:split(iolist_to_binary(TokenKey), <<"/">>),
+            ok = store(iolist_to_binary(Token), Key),
+            io:format("[RESPONDER] Stored key for token: ~s key: ~s~n", [Token, Key]),
+            send_response(Socket, Version, 204, "OK", "");
+        _ ->
+            io:format("[RESPONDER] Invalid POST path: ~p~n", [Path]),
+            send_response(Socket, Version, 404, "Not Found", "")
+    end;
+handle_request(Socket, 'GET', {abs_path, Path}, Version) ->
+    case Path of
+        "/.well-known/acme-challenge/" ++ Token ->
             io:format("[RESPONDER] Challenge request for token: ~p~n", [Token]),
-            case ets:lookup(?CHALLENGE_TABLE, iolist_to_binary(Token)) of
+            case lookup(iolist_to_binary(Token)) of
                 [{_, Key}] ->
                     io:format("[RESPONDER] Found key for token: ~p~n", [Key]),
                     send_response(Socket, Version, 200, "OK", Key);
@@ -146,8 +185,11 @@ handle_request(Socket, Method, {abs_path, Path}, Version) ->
                     io:format("[RESPONDER] Token not found: ~p~n", [Token]),
                     send_response(Socket, Version, 404, "Not Found", "")
             end;
+        "/health" ->
+            io:format("[RESPONDER] Health check request~n"),
+            send_response(Socket, Version, 200, "OK", "OK");
         _ ->
-            io:format("[RESPONDER] Invalid request: ~p ~p~n", [Method, Path]),
+            io:format("[RESPONDER] Invalid GET request: ~p~n", [Path]),
             send_response(Socket, Version, 404, "Not Found", "")
     end;
 handle_request(Socket, Method, Path, Version) ->
@@ -291,8 +333,32 @@ send_400(Socket) ->
 
 insert_challenges(Challenges) ->
     lists:foreach(
-        fun(#{<<"token">> := Token, <<"key">> := Key}) ->
-            true = ets:insert(?CHALLENGE_TABLE, {Token, Key})
+        fun(#{token := Token, key := Key}) ->
+            store(Token, Key)
         end,
         Challenges
     ).
+
+store(Token, Key) ->
+    true = ets:insert(?CHALLENGE_TABLE, {Token, Key}),
+    ok.
+
+%% lookup token from ETS, otherwise read from file /tmp/{TOKEN}
+lookup(Token) ->
+    case ets:lookup(?CHALLENGE_TABLE, iolist_to_binary(Token)) of
+        [] ->
+            io:format("[RESPONDER] No token found in ets.~n"),
+            read_file(Token);
+        Res ->
+            Res
+    end.
+
+read_file(Token) ->
+    Path = filename:join(["/tmp", Token]),
+    case file:read_file(Path) of
+        {ok, Key} ->
+            [{Token, Key}];
+        {error, _Reason} ->
+            io:format("[RESPONDER] No token found from '~s'.~n", [Path]),
+            []
+    end.

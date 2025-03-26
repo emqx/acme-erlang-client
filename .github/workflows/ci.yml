@@ -1,37 +1,25 @@
 name: CI
-
 on: [push, pull_request]
 
 jobs:
-
-  tests:
-    name: Tests
+  build:
+    runs-on: ubuntu-22.04
     strategy:
-      fail-fast: false
       matrix:
-        otp: [20, 23, 24, 25, 26, 27]
-    runs-on: ubuntu-20.04
-    container:
-      image: erlang:${{ matrix.otp }}
+        otp: [['27.1', '3.22.1']]
     steps:
-    - uses: actions/checkout@v3
-    - run: make
-      if: matrix.otp >= 24 && matrix.otp < 27
-    - run: REBAR=rebar make
-      if: matrix.otp < 24
-    - run: rebar3 compile
-    - run: rebar3 xref
-    - run: rebar3 dialyzer
-    - run: rebar3 eunit -v
-    - name: Send to Coveralls
-      if: matrix.otp == 24
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        COVERALLS=true rebar3 as test coveralls send
-        curl -v -k https://coveralls.io/webhook \
-             --header "Content-Type: application/json" \
-             --data '{"repo_name":"$GITHUB_REPOSITORY",
-                      "repo_token":"$GITHUB_TOKEN",
-                      "payload":{"build_num":$GITHUB_RUN_ID,
-                                 "status":"done"}}'
+      - name: Checkout
+        uses: actions/checkout@v4.2.1
+      - name: Setup Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp[0] }}
+          rebar3-version: ${{ matrix.otp[1] }}
+      - run: |
+          make
+          make fmt-check
+          make xref
+          make dialyzer
+          make test-env
+          make ct
+          make cover
