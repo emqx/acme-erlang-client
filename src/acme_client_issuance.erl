@@ -135,9 +135,35 @@ The client is implemented as a state machine with the following states:
 ensure_priv_key(CertType, undefined) ->
     Key = acme_client_lib:generate_key(CertType),
     fun() -> Key end;
+ensure_priv_key(CertType, <<"file://", _/binary>> = Path) ->
+    ensure_priv_key(CertType, str(Path));
+ensure_priv_key(_CertType, "file://" ++ Path) ->
+    case read_priv_key_file(Path) of
+        {ok, Key} ->
+            fun() -> Key end;
+        {error, Reason} ->
+            throw(#{cause => bad_priv_key_file, path => Path, error => Reason})
+    end;
 ensure_priv_key(_CertType, Key) ->
-    %% TODO: load from pem if Key is "file://{PATH}"
     fun() -> Key end.
+
+ensure_ca_certs([]) ->
+    [];
+ensure_ca_certs([<<"file://", _/binary>> = Path | Rest]) ->
+    ensure_ca_certs([str(Path) | Rest]);
+ensure_ca_certs(["file://" ++ Path | Rest]) ->
+    case read_cert_file(Path) of
+        {ok, Certs} ->
+            Certs ++ ensure_ca_certs(Rest);
+        {error, Reason} ->
+            throw(#{cause => bad_ca_cert_file, path => Path, error => Reason})
+    end;
+ensure_ca_certs([Cert | Rest]) ->
+    case is_record(Cert, 'OTPCertificate') of
+        true -> ok;
+        false -> throw(#{cause => bad_ca_cert, cert => Cert})
+    end,
+    [Cert | ensure_ca_certs(Rest)].
 
 check_cert_type(CertType) ->
     CertType =:= ec orelse CertType =:= rsa orelse
@@ -198,7 +224,7 @@ make_data(DirURL, Domains, Request) ->
             domains => IdnaDomains,
             contact => maps:get(contact, Request, []),
             cert_type => maps:get(cert_type, Request, ec),
-            ca_certs => maps:get(ca_certs, Request, []),
+            ca_certs => ensure_ca_certs(maps:get(ca_certs, Request, [])),
             challenge_type => maps:get(challenge_type, Request, <<"http-01">>),
             acc_key => ensure_priv_key(CertType, maps:get(acc_key, Request, undefined)),
             cert_key => fun() -> CertKey end,
@@ -1005,3 +1031,37 @@ decode_pem(PEM) ->
 
 base64url_encode(Bin) ->
     base64:encode(Bin, #{mode => urlsafe, padding => false}).
+
+read_cert_file(Path) ->
+    case file:read_file(Path) of
+        {ok, PemBin} ->
+            decode_pem_to_certs(PemBin);
+        {error, Reason} ->
+            {error, #{cause => {file_error, Reason}}}
+    end.
+
+decode_pem_to_certs(PemBin) ->
+    case decode_pem(PemBin) of
+        {ok, Certs} ->
+            {ok, lists:map(fun(DER) -> public_key:pkix_decode_cert(DER, otp) end, Certs)};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+read_priv_key_file(Path) ->
+    case file:read_file(Path) of
+        {ok, PemBin} ->
+            decode_pem_to_priv_key(PemBin);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+decode_pem_to_priv_key(PemBin) ->
+    case public_key:pem_decode(PemBin) of
+        [{K, DER, not_encrypted}] when K =:= 'RSAPrivateKey' orelse K =:= 'ECPrivateKey' ->
+            {ok, public_key:der_decode(K, DER)};
+        [X] ->
+            {error, {bad_key, X}};
+        [_ | _] ->
+            {error, multiple_keys_found}
+    end.

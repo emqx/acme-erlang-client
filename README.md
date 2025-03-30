@@ -13,6 +13,8 @@ This is a fork of [processone/p1_acme](https://github.com/processone/p1_acme) wi
 - Erlang with OTP >= 27 support (so far no support for OTP < 27)
 - Rebar3-only build system
 - Added polling for challenge status for each domain
+- Support `file:///path/to/file.pem` for account key and CA certificates
+- Always generate certificate private key, do not allow to provide it
 
 ## Usage
 

@@ -134,8 +134,8 @@ t_untrusted_ca({init, Config}) ->
     % Generate CA key and cert using OpenSSL
     CmdList = [
         "cd " ++ TmpDir,
-        "/usr/bin/openssl genrsa -out ca.key 2048",
-        "/usr/bin/openssl req -x509 -new -nodes -key ca.key -sha256 -days 365"
+        "openssl genrsa -out ca.key 2048",
+        "openssl req -x509 -new -nodes -key ca.key -sha256 -days 365"
         " -out ca.pem -subj '/CN=Untrusted Test CA'"
     ],
     Cmd = string:join(CmdList, " && "),
@@ -211,6 +211,53 @@ t_trusted_ca(Config) ->
         }
     ),
     ?assertMatch({ok, _}, R1),
+    ok.
+
+t_file_input({init, Config}) ->
+    % Create a temporary directory
+    TmpDir = string:trim(os:cmd("mktemp -d")),
+
+    % Generate CA key and cert
+    CmdList = [
+        "cd " ++ TmpDir,
+        "openssl genrsa -out acc.key 2048",
+        "openssl genrsa -out ca.key 2048",
+        "openssl req -x509 -new -nodes -key ca.key -sha256 -days 365"
+        " -out ca.pem -subj '/CN=Test CA'"
+    ],
+    Cmd = string:join(CmdList, " && "),
+    ok = cmd("/bin/sh -c '" ++ Cmd ++ "'"),
+
+    [{tmp_dir, TmpDir} | Config];
+t_file_input({'end', Config}) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    ok = cmd("rm -rf " ++ TmpDir);
+t_file_input(Config) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    R = run(
+        #{
+            dir_url => "https://localhost:14000/dir",
+            domains => ["a.local.net"],
+            challenge_fn => fun challenge_fn/1,
+            poll_interval => 100,
+            cert_type => ec,
+            ca_certs => [list_to_binary("file://" ++ TmpDir ++ "/ca.pem")],
+            acc_key => list_to_binary("file://" ++ TmpDir ++ "/acc.key"),
+            httpc_opts => #{ssl => [{verify, verify_none}]}
+        }
+    ),
+    ?assertMatch({error, #{cause := unknown_ca}}, R),
+
+    % Test with non-existent file
+    BadPath = "nonexistent.pem",
+    R2 = run(
+        #{
+            dir_url => "https://localhost:14000/dir",
+            domains => ["a.local.net"],
+            ca_certs => ["file://" ++ BadPath]
+        }
+    ),
+    ?assertMatch({error, #{cause := bad_ca_cert_file, path := BadPath}}, R2),
     ok.
 
 run(Request) ->
