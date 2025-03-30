@@ -237,9 +237,6 @@ s1_directory(info, {start, Ref}, Data) ->
     DirURL = maps:get(dir_url, Data),
     Data1 = Data#{caller_ref => Ref},
     http_get(DirURL, Data1);
-s1_directory(info, {http, {RequestId, Response}}, Data) ->
-    %% got the directory response
-    handle_rsp(RequestId, Response, Data);
 s1_directory(internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, JSON), Data) ->
     %% continue handling the directory response
     case JSON of
@@ -279,9 +276,6 @@ s2_nonce(timeout, {start, Delay}, Data) ->
     ?LOG(info, "get_nonce_after_delay", #{delay => Delay}),
     NonceURL = maps:get(new_nonce_url, Data),
     http_get(NonceURL, Data);
-s2_nonce(info, {http, {RequestId, Response}}, Data) ->
-    %% got the nonce response
-    handle_rsp(RequestId, Response, Data);
 s2_nonce(internal, ?HTTP_OK(_Code, _Slogan, Hdrs, _JSON), Data) ->
     PrevState = maps:get(prev_state, Data, undefined),
     Data1 = maps:without([prev_state], Data),
@@ -309,8 +303,6 @@ s3_account(enter, _PrevState, Data) ->
     },
     JoseJSON = jose_json(Data, Body, URL),
     http_post(URL, JoseJSON, Data);
-s3_account(info, {http, {RequestId, Response}}, Data) ->
-    handle_rsp(RequestId, Response, Data);
 s3_account(internal, ?HTTP_OK(_Code, _Slogan, Hdrs, JSON), Data) ->
     case find_location(Hdrs, Data) of
         undefined ->
@@ -345,8 +337,6 @@ s4_order(enter, _PrevState, Data) ->
     Body = #{<<"identifiers">> => Identifiers},
     JoseJSON = jose_json(Data, Body, URL),
     http_post(URL, JoseJSON, Data);
-s4_order(info, {http, {RequestId, Response}}, Data) ->
-    handle_rsp(RequestId, Response, Data);
 s4_order(internal, ?HTTP_OK(_Code, _Slogan, Hdrs, JSON), Data) ->
     case find_location(Hdrs, Data) of
         undefined ->
@@ -379,8 +369,6 @@ s5_auth(enter, _PrevState, #{auth_urls := [AuthURL | _]} = Data) ->
     ?LOG(info, "domain_authorization_start", #{auth_url => AuthURL}),
     JoseJSON = jose_json(Data, <<>>, AuthURL),
     http_post(AuthURL, JoseJSON, Data);
-s5_auth(info, {http, {RequestId, Response}}, Data) ->
-    handle_rsp(RequestId, Response, Data);
 s5_auth(internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, JSON), Data) ->
     case pick_a_challenge(JSON, Data) of
         {ok, Challenge} ->
@@ -455,8 +443,6 @@ s7_challenge(enter, _PrevState, #{challenges := [Challenge | Challenges]} = Data
     ?LOG(info, "request_challenge", #{domain => Domain}),
     JoseJSON = jose_json(Data, #{}, URL),
     http_post(URL, JoseJSON, Data#{challenges => Challenges, challenge_poll => Polls ++ [Challenge]});
-s7_challenge(info, {http, {RequestId, Response}}, Data) ->
-    handle_rsp(RequestId, Response, Data);
 s7_challenge(internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, _JSON), #{challenges := Challenges} = Data) ->
     case Challenges of
         [] ->
@@ -480,8 +466,6 @@ s8_poll_challenge(state_timeout, poll_next_challenge, #{challenge_poll := [Chall
     ?LOG(info, "challenge_status_polling", #{domain => Domain}),
     JoseJSON = jose_json(Data, <<>>, URL),
     http_post(URL, JoseJSON, Data);
-s8_poll_challenge(info, {http, {RequestId, Response}}, Data) ->
-    handle_rsp(RequestId, Response, Data);
 s8_poll_challenge(
     internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, JSON), #{challenge_poll := [Challenge | Rest]} = Data
 ) ->
@@ -519,8 +503,6 @@ s9_poll_order(state_timeout, check_order_status, #{order_url := URL} = Data) ->
     ?LOG(info, "order_status_polling_start", #{order_url => URL}),
     JoseJSON = jose_json(Data, <<>>, URL),
     http_post(URL, JoseJSON, Data);
-s9_poll_order(info, {http, {RequestId, Response}}, Data) ->
-    handle_rsp(RequestId, Response, Data);
 s9_poll_order(internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, JSON), Data) ->
     case JSON of
         #{<<"status">> := NotReady} when
@@ -558,8 +540,6 @@ s10_finalize(internal, {finalize, URL}, Data) ->
     Body = #{<<"csr">> => base64url_encode(CSR)},
     JoseJSON = jose_json(Data, Body, URL),
     http_post(URL, JoseJSON, Data);
-s10_finalize(info, {http, {RequestId, Response}}, Data) ->
-    handle_rsp(RequestId, Response, Data);
 s10_finalize(internal, ?HTTP_OK(_Code, _Slogan, Hdrs, JSON), Data0) ->
     case find_location(Hdrs, Data0) of
         undefined ->
@@ -587,8 +567,6 @@ s11_certificate(enter, _PrevState, _Data) ->
 s11_certificate(internal, {download_certificate, URL}, Data) ->
     JoseJSON = jose_json(Data, <<>>, URL),
     http_post(URL, JoseJSON, Data);
-s11_certificate(info, {http, {RequestId, Response}}, Data) ->
-    handle_rsp(RequestId, Response, Data);
 s11_certificate(internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, PEM), Data) ->
     case decode_pem(PEM) of
         {ok, []} ->
@@ -634,6 +612,12 @@ This function handles:
 3. Abort event: unrecoverable error, reply to the caller and stop
 4. Unknown event: log error and ignore
 """.
+handle_event(_StateName, info, {http, {RequestId, Response}}, Data) ->
+    %% Received HTTP response,
+    %% handle_rsp should trigger HTTP_OK, HTTP_RETRY or ABORT internal event
+    %% HTTP_OK is handled by the state functions
+    %% and HTTP_RETRY or ABORT will be handled by the handle_event function
+    handle_rsp(RequestId, Response, Data);
 handle_event(StateName, internal, ?HTTP_RETRY("badNonce"), Data) ->
     ?LOG(info, "need_retry_at_state_" ++ atom_to_list(StateName), #{reason => "badNonce"}),
     Delay = maps:get(poll_interval, Data),
