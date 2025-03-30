@@ -62,15 +62,24 @@ Request = #{
     httpc_opts => #{
         ssl => [{verify, verify_none}],
         ipfamily => inet % default is inet6fb4
-    }
+    },
+    %% Optional output directory for certificate files
+    %% When provided, the keys and certificates will be saved to the directory
+    %% and the returned map will contain only the file names
+    %% for example:
+    %% #{ acc_key => "/path/to/output/acme-client-account-key.pem",
+    %%    cert_key => "/path/to/output/key.pem",
+    %%    cert_chain => "/path/to/output/cert.pem"
+    %%  }
+    output_dir => "/path/to/output"
 }.
 
 %% Request the certificate (timeout in milliseconds)
 case acme_client:run(Request, 60000) of
     {ok, #{
-        acc_key := AccKey,      %% Account private key
-        cert_key := CertKey,    %% Certificate private key
-        cert_chain := [Cert|_]  %% Certificate chain
+        acc_key := AccKey,      %% Account private key or PEM file path
+        cert_key := CertKey,    %% Certificate private key or PEM file path
+        cert_chain := [Cert|_]  %% Certificate chain or PEM file path
     }} ->
         %% Success! Use the certificate
         ok;

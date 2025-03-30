@@ -23,7 +23,10 @@
     generate_csr/2,
     jose_json/5,
     sort_cert_chain/1,
-    validate_cert_chain/4
+    validate_cert_chain/4,
+    write_priv_key/2,
+    read_priv_key_file/1,
+    read_cert_file/1
 ]).
 
 -include_lib("public_key/include/public_key.hrl").
@@ -225,3 +228,70 @@ jose_json(AccKey, AccURL, Nonce, Data, URL) ->
 
 encode_json(JSON) ->
     iolist_to_binary(json:encode(JSON)).
+
+-spec write_priv_key(file:filename(), priv_key()) -> ok | {error, term()}.
+write_priv_key(Path, Key) ->
+    PemEntry =
+        case Key of
+            #'RSAPrivateKey'{} ->
+                {'RSAPrivateKey', public_key:der_encode('RSAPrivateKey', Key), not_encrypted};
+            #'ECPrivateKey'{} ->
+                {'ECPrivateKey', public_key:der_encode('ECPrivateKey', Key), not_encrypted};
+            #'PrivateKeyInfo'{} ->
+                {'PrivateKeyInfo', public_key:der_encode('PrivateKeyInfo', Key), not_encrypted}
+        end,
+    case file:write_file(Path, public_key:pem_encode([PemEntry])) of
+        ok -> ok;
+        {error, Reason} -> {error, {file_error, Reason}}
+    end.
+
+-spec read_priv_key_file(file:filename()) -> {ok, priv_key()} | {error, term()}.
+read_priv_key_file(Path) ->
+    case file:read_file(Path) of
+        {ok, PemBin} ->
+            decode_pem_to_priv_key(PemBin);
+        {error, Reason} ->
+            {error, {file_error, Reason}}
+    end.
+
+-spec decode_pem_to_priv_key(binary()) -> {ok, priv_key()} | {error, term()}.
+decode_pem_to_priv_key(PemBin) ->
+    try public_key:pem_decode(PemBin) of
+        [{'RSAPrivateKey', DER, not_encrypted}] ->
+            {ok, public_key:der_decode('RSAPrivateKey', DER)};
+        [{'ECPrivateKey', DER, not_encrypted}] ->
+            {ok, public_key:der_decode('ECPrivateKey', DER)};
+        [{'PrivateKeyInfo', DER, not_encrypted}] ->
+            {ok, public_key:der_decode('PrivateKeyInfo', DER)};
+        [X] ->
+            {error, {bad_key, X}};
+        [] ->
+            {error, no_valid_key};
+        [_ | _] ->
+            {error, multiple_keys_found}
+    catch
+        C:E ->
+            {error, {invalid_pem, {C, E}}}
+    end.
+
+-spec read_cert_file(file:filename()) -> {ok, [cert()]} | {error, term()}.
+read_cert_file(Path) ->
+    case file:read_file(Path) of
+        {ok, PemBin} ->
+            decode_pem_to_certs(PemBin);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec decode_pem_to_certs(binary()) -> {ok, [cert()]} | {error, term()}.
+decode_pem_to_certs(PemBin) ->
+    try
+        DERs = lists:map(
+            fun({'Certificate', DER, not_encrypted}) -> DER end,
+            public_key:pem_decode(PemBin)
+        ),
+        {ok, lists:map(fun(DER) -> public_key:pkix_decode_cert(DER, otp) end, DERs)}
+    catch
+        C:E:Stack ->
+            {error, {C, E, Stack}}
+    end.

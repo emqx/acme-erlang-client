@@ -68,7 +68,7 @@ The client is implemented as a state machine with the following states:
     s11_certificate/3
 ]).
 
--export([run/2]).
+-export([run/2, write_output/3]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -94,16 +94,18 @@ The client is implemented as a state machine with the following states:
     challenge_fn => challenge_fn(),
     acc_key => fun(() -> priv_key()),
     httpc_opts => httpc_opts(),
-    poll_interval => timeout()
+    poll_interval => timeout(),
+    output_dir => string()
 }.
+-type file_path() :: string() | binary().
 -type result() :: #{
     %% Account key, provided by the caller, or generated,
     %% keep it for future revocation and/or renewal
-    acc_key := priv_key(),
+    acc_key := priv_key() | file_path(),
     %% Generated private key for the certificate
-    cert_key := priv_key(),
+    cert_key := priv_key() | file_path(),
     %% The certificate chain issued by the CA
-    cert_chain := [cert()]
+    cert_chain := [cert()] | file_path()
 }.
 -define(IS_2XX_3XX(Code), Code >= 200 andalso Code < 400).
 -define(HTTP_OK(Code, Slogan, Hdrs, JSON), {http_ok, Code, Slogan, Hdrs, JSON}).
@@ -138,7 +140,7 @@ ensure_priv_key(CertType, undefined) ->
 ensure_priv_key(CertType, <<"file://", _/binary>> = Path) ->
     ensure_priv_key(CertType, str(Path));
 ensure_priv_key(_CertType, "file://" ++ Path) ->
-    case read_priv_key_file(Path) of
+    case acme_client_lib:read_priv_key_file(Path) of
         {ok, Key} ->
             fun() -> Key end;
         {error, Reason} ->
@@ -152,7 +154,7 @@ ensure_ca_certs([]) ->
 ensure_ca_certs([<<"file://", _/binary>> = Path | Rest]) ->
     ensure_ca_certs([str(Path) | Rest]);
 ensure_ca_certs(["file://" ++ Path | Rest]) ->
-    case read_cert_file(Path) of
+    case acme_client_lib:read_cert_file(Path) of
         {ok, Certs} ->
             Certs ++ ensure_ca_certs(Rest);
         {error, Reason} ->
@@ -171,14 +173,48 @@ check_cert_type(CertType) ->
 
 -doc """
 Starts the ACME issuance process.
+
+The request is a map with the following keys:
+- `dir_url`: The URL of the ACME directory.
+- `domains`: A list of domains to issue the certificate for.
+- `contact`: A list of contact email addresses.
+- `cert_type`: The type of certificate to issue, either `ec` or `rsa`.
+- `challenge_type`: The type of challenge to use, either `http-01` or `dns-01`.
+- `challenge_fn`: A function that returns the challenge for a given domain.
+  The function is called with a list of challenges, and returns `ok`.
+- `httpc_opts`: The `httpc` client options.
+- `poll_interval`: The interval to poll the order status.
+- `acc_key`: The `file://{path}` to the account key file, or term of type `public_key:private_key()`.
+- `ca_certs`: A list of CA certificates to validate the issued certificate.
+  It either a list of `#'OTPCertificate'{}` records, or `file://{path}` to the PEM files.
+- `output_dir`: Optional, the directory to save the certificate files.
+
+The function returns a map with the following keys:
+- `acc_key`: The account key or the path to the PEM file if output_dir is provided.
+  The account key is generated if not provided, and will be the path without `file://` prefix if `acc_key` is provided in the request.
+- `cert_key`: The certificate key or the path to the PEM file if output_dir is provided.
+  Private key for the certificate is always generated.
+  So far user provided private key is not supported.
+- `cert_chain`: The certificate chain or the path to the PEM file if output_dir is provided.
+  Note, the chain does not include the root CA certificate.
 """.
 -spec run(request(), timeout()) -> {ok, result()} | {error, term()}.
 run(#{dir_url := DirURL, domains := Domains} = Request, Timeout) ->
     {ok, _} = application:ensure_all_started(acme_client),
     ok = acme_client_httpc:init(maps:get(httpc_opts, Request, #{})),
+    AccKeyPath =
+        case maps:get(acc_key, Request, undefined) of
+            "file://" ++ _ = P ->
+                P;
+            <<"file://", _/binary>> = P ->
+                P;
+            _ ->
+                undefined
+        end,
     case make_data(DirURL, Domains, Request) of
         {ok, Data} ->
-            do_run(Data, Timeout);
+            Result = do_run(Data, Timeout),
+            maybe_write_output(Result, maps:get(output_dir, Request, undefined), AccKeyPath);
         {error, Reason} ->
             {error, Reason}
     end.
@@ -369,17 +405,28 @@ s4_order(internal, ?HTTP_OK(_Code, _Slogan, Hdrs, JSON), Data) ->
             ?NEXT_ABORT(Data, #{cause => missing_header, header => "Location"});
         OrderURL ->
             Data1 = Data#{order_url => OrderURL},
-            %% Order must start from "pending" state
-            case is_valid_order(JSON, <<"pending">>) of
-                true ->
-                    AuthURLs = maps:get(<<"authorizations">>, JSON),
-                    {next_state, s5_auth, Data1#{auth_urls => AuthURLs}};
-                status_nomatch ->
-                    ?NEXT_ABORT(Data1, #{
-                        cause => status_nomatch, expected => <<"pending">>, response => JSON
-                    });
-                invalid_order ->
-                    ?NEXT_ABORT(Data1, #{cause => bad_order_response, response => JSON})
+            case JSON of
+                #{<<"status">> := <<"valid">>, <<"certificate">> := CertURL} ->
+                    % Order is already valid, skip to certificate download
+                    ?LOG(info, "order_already_valid", #{certificate_url => CertURL}),
+                    Action = ?INTERNAL({download_certificate, str(CertURL)}),
+                    {next_state, s11_certificate, Data1, [Action]};
+                #{<<"status">> := <<"ready">>, <<"finalize">> := FinalizeURL} ->
+                    % Order is ready for finalization, skip to CSR submission
+                    ?LOG(info, "order_already_ready", #{finalize_url => FinalizeURL}),
+                    Action = ?INTERNAL({finalize, FinalizeURL}),
+                    {next_state, s10_finalize, Data1, [Action]};
+                _ ->
+                    % Normal flow - check order validity and proceed with authorizations
+                    case is_valid_order(JSON) of
+                        true ->
+                            AuthURLs = maps:get(<<"authorizations">>, JSON),
+                            {next_state, s5_auth, Data1#{auth_urls => AuthURLs}};
+                        bad_status ->
+                            ?NEXT_ABORT(Data1, #{cause => bad_order_status, response => JSON});
+                        invalid_order ->
+                            ?NEXT_ABORT(Data1, #{cause => bad_order_response, response => JSON})
+                    end
             end
     end;
 s4_order(EventType, EventContent, Data) ->
@@ -442,6 +489,10 @@ s6_responder(state_timeout, check_challenges, #{challenges := Challenges} = Data
             ),
             {keep_state, Data#{challenges => PendingChallenges},
                 ?INTERNAL({prepare_responder, Args})};
+        #{<<"valid">> := [_ | _], <<"pending">> := []} ->
+            %% all challenges are already validated
+            %% enter order polling state
+            {next_state, s9_poll_order, maps:without([challenges], Data)};
         _ ->
             ?NEXT_ABORT(Data, #{
                 cause => bad_challenge_status, challenges => Challenges
@@ -877,18 +928,19 @@ jose_json(Data, Body, URL) when is_binary(Body) ->
 %% ready: Order is ready, start certificate issuance, send CSR
 %% valid: Order is valid, certificate issued
 %% invalid: Order is invalid, stop authorization
-is_valid_order(Order, ExpectedStatus) ->
+is_valid_order(Order) ->
     case Order of
         #{
             <<"status">> := Status,
             <<"identifiers">> := [_ | _],
             <<"authorizations">> := [_ | _]
         } ->
-            case Status =:= ExpectedStatus of
-                true ->
-                    true;
-                false ->
-                    status_nomatch
+            case Status of
+                <<"pending">> -> true;
+                <<"processing">> -> true;
+                <<"ready">> -> true;
+                <<"valid">> -> true;
+                _ -> bad_status
             end;
         _ ->
             invalid_order
@@ -1032,36 +1084,43 @@ decode_pem(PEM) ->
 base64url_encode(Bin) ->
     base64:encode(Bin, #{mode => urlsafe, padding => false}).
 
-read_cert_file(Path) ->
-    case file:read_file(Path) of
-        {ok, PemBin} ->
-            decode_pem_to_certs(PemBin);
-        {error, Reason} ->
-            {error, #{cause => {file_error, Reason}}}
-    end.
+maybe_write_output(Result, undefined, _AccKeyPath) ->
+    Result;
+maybe_write_output({ok, Result}, OutputDir, AccKeyPath) ->
+    write_output(Result, OutputDir, AccKeyPath);
+maybe_write_output({error, _} = Error, _OutputDir, _AccKeyPath) ->
+    Error.
 
-decode_pem_to_certs(PemBin) ->
-    case decode_pem(PemBin) of
-        {ok, Certs} ->
-            {ok, lists:map(fun(DER) -> public_key:pkix_decode_cert(DER, otp) end, Certs)};
+write_output(Result, OutputDir, AccKeyPath) ->
+    #{acc_key := AccKey, cert_key := CertKey, cert_chain := CertChain} = Result,
+    maybe
+        ok ?= filelib:ensure_dir(filename:join(OutputDir, "foo")),
+        KeyPath = filename:join(OutputDir, "key.pem"),
+        CertPath = filename:join(OutputDir, "cert.pem"),
+        % Write account key if it's not already a file path
+        AccKeyPath1 =
+            case AccKeyPath =/= undefined of
+                true ->
+                    AccKeyPath;
+                false ->
+                    P = filename:join(OutputDir, "acme-client-account-key.pem"),
+                    ok = acme_client_lib:write_priv_key(P, AccKey),
+                    P
+            end,
+        % Write certificate key
+        ok ?= acme_client_lib:write_priv_key(KeyPath, CertKey),
+        % Encode and write certificate chain
+        CertPemEntries = [
+            {'Certificate', public_key:pkix_encode('OTPCertificate', Cert, otp), not_encrypted}
+         || Cert <- CertChain
+        ],
+        ok ?= file:write_file(CertPath, public_key:pem_encode(CertPemEntries)),
+        {ok, #{
+            acc_key => AccKeyPath1,
+            cert_key => KeyPath,
+            cert_chain => CertPath
+        }}
+    else
         {error, Reason} ->
-            {error, Reason}
-    end.
-
-read_priv_key_file(Path) ->
-    case file:read_file(Path) of
-        {ok, PemBin} ->
-            decode_pem_to_priv_key(PemBin);
-        {error, Reason} ->
-            {error, Reason}
-    end.
-
-decode_pem_to_priv_key(PemBin) ->
-    case public_key:pem_decode(PemBin) of
-        [{K, DER, not_encrypted}] when K =:= 'RSAPrivateKey' orelse K =:= 'ECPrivateKey' ->
-            {ok, public_key:der_decode(K, DER)};
-        [X] ->
-            {error, {bad_key, X}};
-        [_ | _] ->
-            {error, multiple_keys_found}
+            {error, #{cause => failed_to_write_output, error => Reason}}
     end.

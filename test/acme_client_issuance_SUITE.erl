@@ -1,3 +1,19 @@
+%%%-------------------------------------------------------------------
+%%% @copyright (C) 2025 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%%
+%%% Licensed under the Apache License, Version 2.0 (the "License");
+%%% you may not use this file except in compliance with the License.
+%%% You may obtain a copy of the License at
+%%%
+%%%     http://www.apache.org/licenses/LICENSE-2.0
+%%%
+%%% Unless required by applicable law or agreed to in writing, software
+%%% distributed under the License is distributed on an "AS IS" BASIS,
+%%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%%% See the License for the specific language governing permissions and
+%%% limitations under the License.
+%%%
+%%%-------------------------------------------------------------------
 -module(acme_client_issuance_SUITE).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -217,10 +233,12 @@ t_file_input({init, Config}) ->
     % Create a temporary directory
     TmpDir = string:trim(os:cmd("mktemp -d")),
 
-    % Generate CA key and cert
+    % Generate CA key and cert with explicit format
     CmdList = [
         "cd " ++ TmpDir,
-        "openssl genrsa -out acc.key 2048",
+        % Generate account key in PKCS#8 format
+        "openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out acc.key",
+        % Generate CA key and cert
         "openssl genrsa -out ca.key 2048",
         "openssl req -x509 -new -nodes -key ca.key -sha256 -days 365"
         " -out ca.pem -subj '/CN=Test CA'"
@@ -260,39 +278,53 @@ t_file_input(Config) ->
     ?assertMatch({error, #{cause := bad_ca_cert_file, path := BadPath}}, R2),
     ok.
 
+t_output_dir({init, Config}) ->
+    TmpDir = string:trim(os:cmd("mktemp -d")),
+    [{tmp_dir, TmpDir} | Config];
+t_output_dir({'end', Config}) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    ok = cmd("rm -rf " ++ TmpDir);
+t_output_dir(Config) ->
+    OutputDir = proplists:get_value(tmp_dir, Config),
+    Req = #{
+        dir_url => "https://localhost:14000/dir",
+        domains => ["a.local.net"],
+        challenge_fn => fun challenge_fn/1,
+        poll_interval => 100,
+        cert_type => ec,
+        output_dir => OutputDir,
+        httpc_opts => #{ssl => [{verify, verify_none}]}
+    },
+    {ok, #{
+        acc_key := AccKeyPath,
+        cert_key := KeyPath,
+        cert_chain := CertPath
+    }} = run(Req),
+    ?assertEqual(filename:join(OutputDir, "acme-client-account-key.pem"), AccKeyPath),
+    NewAccKeyPath = filename:join(OutputDir, "acc-key.pem"),
+    ok = file:rename(AccKeyPath, NewAccKeyPath),
+    {ok, AccKey} = file:read_file(NewAccKeyPath),
+    {ok, Key} = file:read_file(KeyPath),
+    {ok, Cert} = file:read_file(CertPath),
+    % Run again with same account key path
+    {ok, #{
+        acc_key := AccKeyPath2,
+        cert_key := KeyPath2,
+        cert_chain := CertPath2
+    }} = run(Req#{acc_key => "file://" ++ NewAccKeyPath}),
+    % Account key should be unchanged
+    ?assertEqual("file://" ++ NewAccKeyPath, AccKeyPath2),
+    {ok, AccKey2} = file:read_file(NewAccKeyPath),
+    ?assertEqual(AccKey, AccKey2),
+    % Key and cert should be new
+    {ok, Key2} = file:read_file(KeyPath2),
+    {ok, Cert2} = file:read_file(CertPath2),
+    ?assertNotEqual(Key, Key2),
+    ?assertNotEqual(Cert, Cert2),
+    ok.
+
 run(Request) ->
     acme_client_issuance:run(Request, 5000).
 
-%% Helper functions for running shell commands
 cmd(Cmd) ->
-    ct:pal("Running:\n  ~s", [Cmd]),
-    Port = erlang:open_port({spawn, Cmd}, [binary, exit_status, stderr_to_stdout]),
-    try
-        ok = wait_cmd_down(Port)
-    after
-        close_port(Port)
-    end.
-
-wait_cmd_down(Port) ->
-    receive
-        {Port, {data, Bin}} ->
-            ct:pal("~s", [Bin]),
-            wait_cmd_down(Port);
-        {Port, {exit_status, Status}} ->
-            case Status of
-                0 -> ok;
-                _ -> {error, Status}
-            end
-    after 1_000 ->
-        ct:pal("still waiting for command response..."),
-        wait_cmd_down(Port)
-    end.
-
-close_port(Port) ->
-    try
-        _ = erlang:port_close(Port),
-        ok
-    catch
-        error:badarg ->
-            ok
-    end.
+    acme_client_test_lib:cmd(Cmd).
