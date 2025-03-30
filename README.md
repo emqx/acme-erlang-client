@@ -7,11 +7,12 @@ This is a fork of [processone/p1_acme](https://github.com/processone/p1_acme) wi
 ## Major Changes from Upstream
 
 - Reimplemented using `gen_statem` for better state management
-- Added comprehensive test suite
+- Added tests
 - Removed YAML dependency in favor of direct JSON field validation
 - Removed `base64url` dependency in favor of `base64` with `urlsafe` mode and `padding => false`
 - Erlang with OTP >= 27 support (so far no support for OTP < 27)
 - Rebar3-only build system
+- Added polling for challenge status for each domain
 
 ## Usage
 

@@ -439,15 +439,19 @@ Submit the challenge requests for each domain to the ACME server.
 """.
 s7_challenge(enter, _PrevState, #{challenges := [Challenge | Challenges]} = Data) ->
     #{<<"domain">> := Domain, <<"url">> := URL} = Challenge,
-    Polls = maps:get(challenge_poll, Data, []),
+    Polls = maps:get(challenge_poll1, Data, []),
     ?LOG(info, "request_challenge", #{domain => Domain}),
     JoseJSON = jose_json(Data, #{}, URL),
-    http_post(URL, JoseJSON, Data#{challenges => Challenges, challenge_poll => Polls ++ [Challenge]});
+    http_post(URL, JoseJSON, Data#{
+        challenges => Challenges, challenge_poll1 => Polls ++ [Challenge]
+    });
 s7_challenge(internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, _JSON), #{challenges := Challenges} = Data) ->
     case Challenges of
         [] ->
             %% All challenges are submitted, start polling them
-            {next_state, s8_poll_challenge, maps:without([challenges], Data)};
+            Data1 = maps:without([challenges], Data),
+            Data2 = Data1#{challenge_poll2 => []},
+            {next_state, s8_poll_challenge, Data2};
         _ ->
             %% Continue with next challenge
             repeat_state_and_data
@@ -457,37 +461,69 @@ s7_challenge(EventType, EventContent, Data) ->
 
 -doc """
 Poll for challenge validation status.
+Poll head of the challenge_poll1 list.
+If the last challenge in challenge_poll1 is polled:
+- If challenge_poll2 is not empty, move challenge_poll2 to challenge_poll1 and start polling again after a delay.
+- If challenge_poll2 is empty, move to the next state (poll order).
 """.
 s8_poll_challenge(enter, _PrevState, _Data) ->
     %% Start polling immediately for the first attempt
     {keep_state_and_data, {state_timeout, 0, poll_next_challenge}};
-s8_poll_challenge(state_timeout, poll_next_challenge, #{challenge_poll := [Challenge | _]} = Data) ->
+s8_poll_challenge(state_timeout, poll_next_challenge, #{challenge_poll1 := [Challenge | _]} = Data) ->
     #{<<"domain">> := Domain, <<"url">> := URL} = Challenge,
     ?LOG(info, "challenge_status_polling", #{domain => Domain}),
     JoseJSON = jose_json(Data, <<>>, URL),
     http_post(URL, JoseJSON, Data);
-s8_poll_challenge(
-    internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, JSON), #{challenge_poll := [Challenge | Rest]} = Data
-) ->
-    #{<<"domain">> := Domain} = Challenge,
+s8_poll_challenge(internal, ?HTTP_OK(_Code, _Slogan, _Hdrs, JSON), Data) ->
+    #{
+        challenge_poll1 := [Challenge0 | Poll1],
+        challenge_poll2 := Poll2
+    } = Data,
+    #{<<"domain">> := Domain} = Challenge0,
     Status = maps:get(<<"status">>, JSON),
-    ?LOG(info, "challenge_status_reply", #{domain => Domain, challenge_status => Status}),
+    Challenge = Challenge0#{<<"status">> => Status},
+    ?LOG(info, "challenge_status_reply", #{
+        domain => Domain,
+        challenge_status => Status,
+        remaining_poll1 => length(Poll1),
+        remaining_poll2 => length(Poll2)
+    }),
+    Delay = maps:get(poll_interval, Data),
     case Status of
         <<"valid">> ->
             %% This challenge is valid, update status and move to next
-            case Rest of
-                [] ->
+            case {Poll1, Poll2} of
+                {[], []} ->
                     %% All challenges polled and valid, move to order polling
-                    {next_state, s9_poll_order, maps:without([challenge_poll], Data)};
-                _ ->
-                    %% Poll next challenge
-                    {keep_state, Data#{challenge_poll => Rest},
+                    {next_state, s9_poll_order, maps:without([challenge_poll1], Data)};
+                {[], _} ->
+                    %% challenge_poll2 is not empty, move challenge_poll2 to challenge_poll1 and start polling again after a delay
+                    {keep_state, Data#{challenge_poll1 => Poll2, challenge_poll2 => []},
+                        {state_timeout, Delay, poll_next_challenge}};
+                {_, _} ->
+                    %% challenge_poll1 is not empty, poll next challenge immediately
+                    {keep_state, Data#{challenge_poll1 => Poll1},
                         {state_timeout, 0, poll_next_challenge}}
             end;
-        _ when Status =:= <<"pending">> orelse Status =:= <<"processing">> ->
-            %% Still pending or processing, poll again after interval
-            Interval = maps:get(poll_interval, Data),
-            {keep_state_and_data, {state_timeout, Interval, poll_next_challenge}};
+        _ when Status =:= <<"processing">> orelse Status =:= <<"pending">> ->
+            case {Poll1, Poll2} of
+                {[], _} ->
+                    %% poll1 is drained, move the current challenge to poll2, and start polling again after a delay
+                    {keep_state,
+                        Data#{
+                            challenge_poll1 => Poll2 ++ [Challenge],
+                            challenge_poll2 => []
+                        },
+                        {state_timeout, Delay, poll_next_challenge}};
+                {_, _} ->
+                    %% move the current challenge to poll2, and poll next challenge immediately
+                    {keep_state,
+                        Data#{
+                            challenge_poll1 => Poll1,
+                            challenge_poll2 => Poll2 ++ [Challenge]
+                        },
+                        {state_timeout, 0, poll_next_challenge}}
+            end;
         _ ->
             ?NEXT_ABORT(Data, #{cause => bad_challenge_status, challenge => JSON})
     end;
