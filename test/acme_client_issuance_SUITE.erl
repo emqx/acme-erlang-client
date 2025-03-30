@@ -1,6 +1,8 @@
 -module(acme_client_issuance_SUITE).
 
 -include_lib("stdlib/include/assert.hrl").
+-include_lib("public_key/include/public_key.hrl").
+-include_lib("public_key/include/OTP-PUB-KEY.hrl").
 
 %% Test server callbacks
 -export([
@@ -100,6 +102,7 @@ t_two_domains(_Config) ->
     R = run(
         #{
             dir_url => "https://localhost:14000/dir",
+            key_type => rsa,
             domains => ["a.local.net", "b.local.net"],
             challenge_fn => fun challenge_fn/1,
             poll_interval => 100,
@@ -124,5 +127,125 @@ t_idna_domains(_Config) ->
     ),
     ?assertMatch({ok, _}, R),
     ok.
+
+t_untrusted_ca({init, Config}) ->
+    % Create a temporary directory for OpenSSL files
+    TmpDir = string:trim(os:cmd("mktemp -d")),
+    % Generate CA key and cert using OpenSSL
+    CmdList = [
+        "cd " ++ TmpDir,
+        "/usr/bin/openssl genrsa -out ca.key 2048",
+        "/usr/bin/openssl req -x509 -new -nodes -key ca.key -sha256 -days 365"
+        " -out ca.pem -subj '/CN=Untrusted Test CA'"
+    ],
+    Cmd = string:join(CmdList, " && "),
+    ok = cmd("/bin/sh -c '" ++ Cmd ++ "'"),
+    % Read the generated CA cert
+    {ok, PemBin} = file:read_file(TmpDir ++ "/ca.pem"),
+    [{'Certificate', Der, _}] = public_key:pem_decode(PemBin),
+    CACert = public_key:pkix_decode_cert(Der, otp),
+    [{tmp_dir, TmpDir}, {ca_cert, CACert} | Config];
+t_untrusted_ca({'end', Config}) ->
+    TmpDir1 = proplists:get_value(tmp_dir, Config),
+    ok = cmd("rm -rf " ++ TmpDir1),
+    ok;
+t_untrusted_ca(Config) ->
+    CACert = proplists:get_value(ca_cert, Config),
+    R = run(
+        #{
+            dir_url => "https://localhost:14000/dir",
+            domains => ["a.local.net"],
+            challenge_fn => fun challenge_fn/1,
+            poll_interval => 100,
+            cert_type => rsa,
+            ca_certs => [CACert],
+            httpc_opts => #{ssl => [{verify, verify_none}]}
+        }
+    ),
+    ?assertMatch({error, #{cause := unknown_ca}}, R),
+    ok.
+
+t_trusted_ca({init, Config}) ->
+    % Get Pebble's root certificate
+    {ok, {{_, 200, _}, _, PEM}} = httpc:request(
+        get,
+        {
+            "https://localhost:15000/roots/0",
+            []
+        },
+        [{ssl, [{verify, verify_none}]}],
+        [{body_format, binary}]
+    ),
+    [{'Certificate', RootDER, _}] = public_key:pem_decode(PEM),
+    RootCert = public_key:pkix_decode_cert(RootDER, otp),
+
+    % Detect root CA key type
+    TBSCert = RootCert#'OTPCertificate'.tbsCertificate,
+    PubKeyInfo = TBSCert#'OTPTBSCertificate'.subjectPublicKeyInfo,
+    KeyType =
+        case PubKeyInfo#'OTPSubjectPublicKeyInfo'.algorithm of
+            #'PublicKeyAlgorithm'{algorithm = ?'rsaEncryption'} -> rsa;
+            #'PublicKeyAlgorithm'{algorithm = ?'id-ecPublicKey'} -> ec
+        end,
+    % Choose opposite key type for our certificate
+    OppositeType =
+        case KeyType of
+            rsa -> ec;
+            ec -> rsa
+        end,
+    [{ca_cert, RootCert}, {ca_type, OppositeType} | Config];
+t_trusted_ca({'end', _Config}) ->
+    ok;
+t_trusted_ca(Config) ->
+    CACert = proplists:get_value(ca_cert, Config),
+    CAType = proplists:get_value(ca_type, Config),
+    R1 = run(
+        #{
+            dir_url => "https://localhost:14000/dir",
+            domains => ["a.local.net"],
+            challenge_fn => fun challenge_fn/1,
+            poll_interval => 100,
+            cert_type => CAType,
+            ca_certs => [CACert],
+            httpc_opts => #{ssl => [{verify, verify_none}]}
+        }
+    ),
+    ?assertMatch({ok, _}, R1),
+    ok.
+
 run(Request) ->
     acme_client_issuance:run(Request, 5000).
+
+%% Helper functions for running shell commands
+cmd(Cmd) ->
+    ct:pal("Running:\n  ~s", [Cmd]),
+    Port = erlang:open_port({spawn, Cmd}, [binary, exit_status, stderr_to_stdout]),
+    try
+        ok = wait_cmd_down(Port)
+    after
+        close_port(Port)
+    end.
+
+wait_cmd_down(Port) ->
+    receive
+        {Port, {data, Bin}} ->
+            ct:pal("~s", [Bin]),
+            wait_cmd_down(Port);
+        {Port, {exit_status, Status}} ->
+            case Status of
+                0 -> ok;
+                _ -> {error, Status}
+            end
+    after 1_000 ->
+        ct:pal("still waiting for command response..."),
+        wait_cmd_down(Port)
+    end.
+
+close_port(Port) ->
+    try
+        _ = erlang:port_close(Port),
+        ok
+    catch
+        error:badarg ->
+            ok
+    end.

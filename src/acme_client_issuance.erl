@@ -962,13 +962,13 @@ generate_csr(#{domains := Domains, cert_key := Key}) ->
 
 validate_ders(
     #{
-        cert_key := CertKey,
+        cert_key := CertKeyFn,
         ca_certs := CaCerts
     },
     DERs
 ) ->
     Chain = lists:map(fun decode_der/1, DERs),
-    validate_chain(Chain, CertKey, CaCerts).
+    validate_chain(Chain, CertKeyFn(), CaCerts).
 
 decode_der(DER) ->
     Cert = public_key:pkix_decode_cert(DER, otp),
