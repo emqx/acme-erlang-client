@@ -41,6 +41,7 @@ hex-publish: clean
 .PHONY: cover
 cover:
 	$(REBAR) cover -v
+	$(REBAR) codecov analyze
 
 .PHONY: fmt
 fmt:

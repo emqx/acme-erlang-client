@@ -23,3 +23,7 @@ jobs:
           make test-env
           make ct
           make cover
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
