@@ -41,6 +41,7 @@ hex-publish: clean
 .PHONY: cover
 cover:
 	$(REBAR) cover -v
+	$(REBAR) codecov analyze
 
 .PHONY: fmt
 fmt:
@@ -57,5 +58,5 @@ fmt-check:
 .PHONY: test-env
 test-env:
 	docker compose up -d
-	while ! curl http://localhost:5002/health > /dev/null 2>&1; do sleep 2; echo "waiting for pebble to be ready"; done
+	while ! curl http://localhost:5002/health > /dev/null 2>&1; do sleep 2; echo "waiting for acme_client_challenge_responder to be ready"; done
 

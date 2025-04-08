@@ -19,7 +19,7 @@ services:
       - "5002:5002"
     volumes:
       - ./:/src
-    command: bash -c 'cp -r /src/ ./app; cd app; rebar3 shell --eval "acme_client_challenge_responder:start([])."'
+    command: bash -c 'cp /src/test/acme_client_challenge_responder.erl ./; erlc acme_client_challenge_responder.erl; erl -eval "acme_client_challenge_responder:start([])."'
     restart: unless-stopped
 
   pebble:
