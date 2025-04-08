@@ -25,7 +25,9 @@
     sort_cert_chain/1,
     validate_cert_chain/4,
     write_priv_key/2,
+    write_priv_key/3,
     read_priv_key_file/1,
+    read_priv_key_file/2,
     read_cert_file/1
 ]).
 
@@ -38,6 +40,7 @@
 -type cert() :: #'OTPCertificate'{}.
 -type pub_key() :: #'RSAPublicKey'{} | #'ECPoint'{}.
 -type cert_type() :: ec | rsa.
+-type password() :: undefined | string() | binary() | fun(() -> string() | binary()).
 
 -define(DER_NULL, <<5, 0>>).
 
@@ -231,6 +234,10 @@ encode_json(JSON) ->
 
 -spec write_priv_key(file:filename(), priv_key()) -> ok | {error, term()}.
 write_priv_key(Path, Key) ->
+    write_priv_key(Path, Key, undefined).
+
+-spec write_priv_key(file:filename(), priv_key(), undefined | password()) -> ok | {error, term()}.
+write_priv_key(Path, Key, _Password) ->
     PemEntry =
         case Key of
             #'RSAPrivateKey'{} ->
@@ -247,24 +254,34 @@ write_priv_key(Path, Key) ->
 
 -spec read_priv_key_file(file:filename()) -> {ok, priv_key()} | {error, term()}.
 read_priv_key_file(Path) ->
+    read_priv_key_file(Path, undefined).
+
+-spec read_priv_key_file(file:filename(), undefined | password()) ->
+    {ok, priv_key()} | {error, term()}.
+read_priv_key_file(Path, Password) ->
     case file:read_file(Path) of
         {ok, PemBin} ->
-            decode_pem_to_priv_key(PemBin);
+            decode_pem_to_priv_key(PemBin, Password);
         {error, Reason} ->
             {error, {file_error, Reason}}
     end.
 
--spec decode_pem_to_priv_key(binary()) -> {ok, priv_key()} | {error, term()}.
-decode_pem_to_priv_key(PemBin) ->
+-spec decode_pem_to_priv_key(binary(), undefined | password()) ->
+    {ok, priv_key()} | {error, term()}.
+decode_pem_to_priv_key(PemBin, Password) ->
     try public_key:pem_decode(PemBin) of
-        [{'RSAPrivateKey', DER, not_encrypted}] ->
-            {ok, public_key:der_decode('RSAPrivateKey', DER)};
-        [{'ECPrivateKey', DER, not_encrypted}] ->
-            {ok, public_key:der_decode('ECPrivateKey', DER)};
-        [{'PrivateKeyInfo', DER, not_encrypted}] ->
-            {ok, public_key:der_decode('PrivateKeyInfo', DER)};
-        [X] ->
-            {error, {bad_key, X}};
+        [{Tag, DER, not_encrypted}] ->
+            {ok, public_key:der_decode(Tag, DER)};
+        [{_Tag, _DER, _Encrypted} = PemEntry] when Password =/= undefined ->
+            try public_key:pem_entry_decode(PemEntry, Password) of
+                Decoded ->
+                    {ok, Decoded}
+            catch
+                _:_ ->
+                    {error, {bad_key, bad_password}}
+            end;
+        [{_Tag, _DER, _Encrypted}] ->
+            {error, {bad_key, encrypted_key_but_no_password_provided}};
         [] ->
             {error, no_valid_key};
         [_ | _] ->

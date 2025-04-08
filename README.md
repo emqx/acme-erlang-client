@@ -48,6 +48,8 @@ Request = #{
     contact => ["mailto:admin@example.com"],
     %% Certificate key type (ec | rsa)
     cert_type => ec,
+    %% Optional private key password
+    cert_key_pass => undefined % fun() -> CertKeyPassword end,
     %% Challenge type (currently only http-01 is tested)
     challenge_type => <<"http-01">>,
     %% Challenge responder function
@@ -58,6 +60,8 @@ Request = #{
     %% Note: The account key is used to identify the account at the ACME server
     %% It's a good practice to use the same account key for certificate renewal and revocation
     acc_key => AccountKey,
+    %% Optional account key password
+    acc_key_pass => undefined % fun() -> AccountKeyPassword end,
     %% Optional HTTP client options
     httpc_opts => #{
         ssl => [{verify, verify_none}],

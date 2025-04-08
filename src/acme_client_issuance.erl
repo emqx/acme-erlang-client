@@ -95,7 +95,9 @@ The client is implemented as a state machine with the following states:
     acc_key => fun(() -> priv_key()),
     httpc_opts => httpc_opts(),
     poll_interval => timeout(),
-    output_dir => string()
+    output_dir => string(),
+    acc_key_pass => undefined | fun(() -> string()),
+    cert_key_pass => undefined | fun(() -> string())
 }.
 -type file_path() :: string() | binary().
 -type result() :: #{
