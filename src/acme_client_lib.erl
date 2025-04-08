@@ -25,7 +25,6 @@
     sort_cert_chain/1,
     validate_cert_chain/4,
     write_priv_key/2,
-    write_priv_key/3,
     read_priv_key_file/1,
     read_priv_key_file/2,
     read_cert_file/1
@@ -234,19 +233,8 @@ encode_json(JSON) ->
 
 -spec write_priv_key(file:filename(), priv_key()) -> ok | {error, term()}.
 write_priv_key(Path, Key) ->
-    write_priv_key(Path, Key, undefined).
-
--spec write_priv_key(file:filename(), priv_key(), undefined | password()) -> ok | {error, term()}.
-write_priv_key(Path, Key, _Password) ->
-    PemEntry =
-        case Key of
-            #'RSAPrivateKey'{} ->
-                {'RSAPrivateKey', public_key:der_encode('RSAPrivateKey', Key), not_encrypted};
-            #'ECPrivateKey'{} ->
-                {'ECPrivateKey', public_key:der_encode('ECPrivateKey', Key), not_encrypted};
-            #'PrivateKeyInfo'{} ->
-                {'PrivateKeyInfo', public_key:der_encode('PrivateKeyInfo', Key), not_encrypted}
-        end,
+    Type = element(1, Key),
+    PemEntry = {Type, public_key:der_encode(Type, Key), not_encrypted},
     case file:write_file(Path, public_key:pem_encode([PemEntry])) of
         ok -> ok;
         {error, Reason} -> {error, {file_error, Reason}}

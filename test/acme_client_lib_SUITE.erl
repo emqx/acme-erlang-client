@@ -113,7 +113,6 @@ t_decode_key(Config) ->
     ?assert(is_record(EcKeyPk8, 'ECPrivateKey')),
     ?assertEqual(ok, write_key(TmpDir ++ "/ec.pk8", EcKeyPk8)),
 
-    %% cannot test this after OK case, maybe OTP caches the decode result?
     ?assertMatch(
         {error, {bad_key, bad_password}},
         read_key(TmpDir ++ "/rsa_enc.key", "wrong_password")
@@ -122,22 +121,18 @@ t_decode_key(Config) ->
     % Test encrypted traditional RSA key
     {ok, RsaKeyEnc} = read_key(TmpDir ++ "/rsa_enc.key", "secret"),
     ?assert(is_record(RsaKeyEnc, 'RSAPrivateKey')),
-    ?assertEqual(ok, write_key(TmpDir ++ "/rsa_enc.key", RsaKeyEnc, "secret")),
 
     % Test encrypted traditional EC key
     {ok, EcKeyEnc} = read_key(TmpDir ++ "/ec_enc.key", "secret"),
     ?assert(is_record(EcKeyEnc, 'ECPrivateKey')),
-    ?assertEqual(ok, write_key(TmpDir ++ "/ec_enc.key", EcKeyEnc, "secret")),
 
     % Test encrypted PKCS#8 RSA key
     {ok, RsaKeyPk8Enc} = read_key(TmpDir ++ "/rsa_enc.pk8", "secret"),
     ?assert(is_record(RsaKeyPk8Enc, 'RSAPrivateKey')),
-    ?assertEqual(ok, write_key(TmpDir ++ "/rsa_enc.pk8", RsaKeyPk8Enc, "secret")),
 
     % Test encrypted PKCS#8 EC key
     {ok, EcKeyPk8Enc} = read_key(TmpDir ++ "/ec_enc.pk8", "secret"),
     ?assert(is_record(EcKeyPk8Enc, 'ECPrivateKey')),
-    ?assertEqual(ok, write_key(TmpDir ++ "/ec_enc.pk8", EcKeyPk8Enc, "secret")),
 
     ?assertMatch(
         {error, {file_error, enoent}},
@@ -169,6 +164,3 @@ read_key(Path, Password) ->
 
 write_key(Path, Key) ->
     acme_client_lib:write_priv_key(Path, Key).
-
-write_key(Path, Key, Password) ->
-    acme_client_lib:write_priv_key(Path, Key, Password).

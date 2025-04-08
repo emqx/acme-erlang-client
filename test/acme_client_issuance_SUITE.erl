@@ -278,6 +278,55 @@ t_file_input(Config) ->
     ?assertMatch({error, #{cause := bad_ca_cert_file, path := BadPath}}, R2),
     ok.
 
+t_encrypted_acc_key({init, Config}) ->
+    % Create a temporary directory
+    TmpDir = string:trim(os:cmd("mktemp -d")),
+
+    % Generate encrypted account key with password "secret"
+    CmdList = [
+        "cd " ++ TmpDir,
+        % Generate account key and encrypt it with password "secret"
+        "openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out acc.key.plain",
+        "openssl pkcs8 -topk8 -in acc.key.plain -out acc.key -passout pass:secret"
+    ],
+    Cmd = string:join(CmdList, " && "),
+    ok = cmd("/bin/sh -c '" ++ Cmd ++ "'"),
+
+    [{tmp_dir, TmpDir} | Config];
+t_encrypted_acc_key({'end', Config}) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    ok = cmd("rm -rf " ++ TmpDir);
+t_encrypted_acc_key(Config) ->
+    TmpDir = proplists:get_value(tmp_dir, Config),
+    AccKeyPath = list_to_binary("file://" ++ TmpDir ++ "/acc.key"),
+
+    % Test with correct password
+    R1 = run(#{
+        dir_url => "https://localhost:14000/dir",
+        domains => ["a.local.net"],
+        challenge_fn => fun challenge_fn/1,
+        poll_interval => 100,
+        cert_type => ec,
+        acc_key => AccKeyPath,
+        acc_key_pass => fun() -> "secret" end,
+        httpc_opts => #{ssl => [{verify, verify_none}]}
+    }),
+    ?assertMatch({ok, _}, R1),
+
+    % Test with wrong password
+    R2 = run(#{
+        dir_url => "https://localhost:14000/dir",
+        domains => ["a.local.net"],
+        challenge_fn => fun challenge_fn/1,
+        poll_interval => 100,
+        cert_type => ec,
+        acc_key => AccKeyPath,
+        acc_key_pass => fun() -> "wrong" end,
+        httpc_opts => #{ssl => [{verify, verify_none}]}
+    }),
+    ?assertMatch({error, #{cause := bad_priv_key_file}}, R2),
+    ok.
+
 t_output_dir({init, Config}) ->
     TmpDir = string:trim(os:cmd("mktemp -d")),
     [{tmp_dir, TmpDir} | Config];
