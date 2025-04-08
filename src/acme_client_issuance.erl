@@ -93,6 +93,7 @@ The client is implemented as a state machine with the following states:
     challenge_type => binary(),
     challenge_fn => challenge_fn(),
     acc_key => fun(() -> priv_key()),
+    acc_key_pass => undefined | fun(() -> string()),
     httpc_opts => httpc_opts(),
     poll_interval => timeout(),
     output_dir => string()
@@ -134,19 +135,19 @@ The client is implemented as a state machine with the following states:
     )
 ).
 
-ensure_priv_key(CertType, undefined) ->
+ensure_priv_key(CertType, undefined, _AccKeyPass) ->
     Key = acme_client_lib:generate_key(CertType),
     fun() -> Key end;
-ensure_priv_key(CertType, <<"file://", _/binary>> = Path) ->
-    ensure_priv_key(CertType, str(Path));
-ensure_priv_key(_CertType, "file://" ++ Path) ->
-    case acme_client_lib:read_priv_key_file(Path) of
+ensure_priv_key(CertType, <<"file://", _/binary>> = Path, AccKeyPass) ->
+    ensure_priv_key(CertType, str(Path), AccKeyPass);
+ensure_priv_key(_CertType, "file://" ++ Path, AccKeyPass) ->
+    case acme_client_lib:read_priv_key_file(Path, AccKeyPass) of
         {ok, Key} ->
             fun() -> Key end;
         {error, Reason} ->
             throw(#{cause => bad_priv_key_file, path => Path, error => Reason})
     end;
-ensure_priv_key(_CertType, Key) ->
+ensure_priv_key(_CertType, Key, _AccKeyPass) ->
     fun() -> Key end.
 
 ensure_ca_certs([]) ->
@@ -185,6 +186,8 @@ The request is a map with the following keys:
 - `httpc_opts`: The `httpc` client options.
 - `poll_interval`: The interval to poll the order status.
 - `acc_key`: The `file://{path}` to the account key file, or term of type `public_key:private_key()`.
+- `acc_key_pass`: The password for the account key file, or `undefined` if the key is not encrypted.
+  The password can be wrapped in an anonymous function, which will be called when the key is read.
 - `ca_certs`: A list of CA certificates to validate the issued certificate.
   It either a list of `#'OTPCertificate'{}` records, or `file://{path}` to the PEM files.
 - `output_dir`: Optional, the directory to save the certificate files.
@@ -254,6 +257,7 @@ make_data(DirURL, Domains, Request) ->
         true = check_cert_type(CertType),
         URL = check_url(DirURL),
         IdnaDomains = check_domains(Domains),
+        AccKeyPass = maps:get(acc_key_pass, Request, undefined),
         Data = #{
             caller_pid => self(),
             dir_url => URL,
@@ -262,7 +266,7 @@ make_data(DirURL, Domains, Request) ->
             cert_type => maps:get(cert_type, Request, ec),
             ca_certs => ensure_ca_certs(maps:get(ca_certs, Request, [])),
             challenge_type => maps:get(challenge_type, Request, <<"http-01">>),
-            acc_key => ensure_priv_key(CertType, maps:get(acc_key, Request, undefined)),
+            acc_key => ensure_priv_key(CertType, maps:get(acc_key, Request, undefined), AccKeyPass),
             cert_key => fun() -> CertKey end,
             acc_url => undefined,
             challenge_fn => maps:get(challenge_fn, Request),

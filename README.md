@@ -15,6 +15,7 @@ This is a fork of [processone/p1_acme](https://github.com/processone/p1_acme) wi
 - Added polling for challenge status for each domain
 - Support `file:///path/to/file.pem` for account key and CA certificates
 - Always generate certificate private key, do not allow to provide it
+- Support encrypted account key
 
 ## Usage
 
@@ -58,6 +59,8 @@ Request = #{
     %% Note: The account key is used to identify the account at the ACME server
     %% It's a good practice to use the same account key for certificate renewal and revocation
     acc_key => AccountKey,
+    %% Optional account key password
+    acc_key_pass => undefined, % | fun() -> AccountKeyPassword end,
     %% Optional HTTP client options
     httpc_opts => #{
         ssl => [{verify, verify_none}],
