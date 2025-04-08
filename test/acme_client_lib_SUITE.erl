@@ -122,6 +122,11 @@ t_decode_key(Config) ->
     {ok, RsaKeyEnc} = read_key(TmpDir ++ "/rsa_enc.key", "secret"),
     ?assert(is_record(RsaKeyEnc, 'RSAPrivateKey')),
 
+    ?assertMatch(
+        {error, {bad_key, encrypted_key_but_no_password_provided}},
+        read_key(TmpDir ++ "/rsa_enc.key", undefined)
+    ),
+
     % Test encrypted traditional EC key
     {ok, EcKeyEnc} = read_key(TmpDir ++ "/ec_enc.key", "secret"),
     ?assert(is_record(EcKeyEnc, 'ECPrivateKey')),
