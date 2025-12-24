@@ -17,7 +17,7 @@
 %%%
 %%%-------------------------------------------------------------------
 {application, acme_client, [
-    {description, "ACME client"},
+    {description, "ACME client, supports HTTP-01 and DNS-01 challenges"},
     {vsn, git},
     {modules, []},
     {registered, []},
@@ -33,7 +33,8 @@
     ]},
     {env, []},
     {mod, {acme_client_app, []}},
-    {licenses, ["Apache-2.0"]}
+    {licenses, ["Apache-2.0"]},
+    {links, [{"Github", "https://github.com/emqx/acme-erlang-client"}]}
 ]}.
 
 %% Local Variables:
