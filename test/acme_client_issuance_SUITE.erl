@@ -40,6 +40,44 @@ challenge_fn([#{token := Token, key := Key} | Rest]) ->
     {ok, _} = acme_client_httpc:post(URL, <<>>, [], [{sync, true}, {body_format, binary}]),
     challenge_fn(Rest).
 
+dns_challenge_fn([]) ->
+    ok;
+dns_challenge_fn([
+    #{domain := Domain, record_name := RecordName, record_value := RecordValue} | Rest
+]) ->
+    %% Use dns-server hostname when running in Docker, localhost when running on host
+    DnsServerHost = os:getenv("ACME_DNS_SERVER_HOST", "localhost"),
+    DnsServerURL = "http://" ++ DnsServerHost ++ ":8053/set-challenge",
+    ct:pal("Setting DNS challenge: ~s -> ~s", [RecordName, RecordValue]),
+    case set_dns_challenge(DnsServerURL, Domain, RecordName, RecordValue) of
+        ok ->
+            dns_challenge_fn(Rest);
+        Error ->
+            ct:pal("Failed to set DNS challenge: ~p", [Error]),
+            Error
+    end.
+
+set_dns_challenge(URL, Domain, RecordName, RecordValue) ->
+    %% Use httpc to make HTTP POST request
+    Body = #{
+        <<"domain">> => Domain,
+        <<"record_name">> => RecordName,
+        <<"record_value">> => RecordValue
+    },
+    JSONBody = json:encode(Body),
+    Headers = [{"Content-Type", "application/json"}],
+    HttpOpts = [{timeout, 5000}, {connect_timeout, 5000}],
+    case httpc:request(post, {URL, Headers, "application/json", JSONBody}, HttpOpts, []) of
+        {ok, {{_, 200, _}, _, _}} ->
+            ok;
+        {ok, {{_, Code, _}, _, ResponseBody}} ->
+            ct:pal("DNS challenge setup failed with HTTP status ~p: ~s", [Code, ResponseBody]),
+            {error, {http_error, Code}};
+        {error, Reason} ->
+            ct:pal("DNS challenge setup failed: ~p", [Reason]),
+            {error, Reason}
+    end.
+
 all() ->
     [
         F
@@ -374,6 +412,43 @@ t_output_dir(Config) ->
 
 run(Request) ->
     acme_client_issuance:run(Request, 5000).
+
+t_dns01_one_domain({init, Config}) ->
+    Config;
+t_dns01_one_domain({'end', _Config}) ->
+    ok;
+t_dns01_one_domain(_Config) ->
+    %% Use pebble hostname when running in Docker, localhost when running on host
+    DirURL =
+        case os:getenv("PEBBLE_HOST") of
+            false -> "https://localhost:14000/dir";
+            Host -> "https://" ++ Host ++ ":14000/dir"
+        end,
+    R = run(
+        #{
+            dir_url => DirURL,
+            domains => ["a.local.net"],
+            challenge_type => <<"dns-01">>,
+            challenge_fn => fun dns_challenge_fn/1,
+            poll_interval => 100,
+            httpc_opts => #{ssl => [{verify, verify_none}]}
+        }
+    ),
+    ?assertMatch(
+        {ok, #{
+            acc_key := _AccKey,
+            cert_key := _CertKey,
+            cert_chain := [_Cert | _]
+        }},
+        R
+    ),
+    {ok, #{cert_chain := CertChain}} = R,
+    %% Verify certificate chain is not empty
+    ?assert(length(CertChain) > 0),
+    %% Verify first certificate is a valid certificate record
+    [FirstCert | _] = CertChain,
+    ?assertMatch(#'OTPCertificate'{}, FirstCert),
+    ok.
 
 cmd(Cmd) ->
     acme_client_test_lib:cmd(Cmd).

@@ -27,7 +27,9 @@
     write_priv_key/2,
     read_priv_key_file/1,
     read_priv_key_file/2,
-    read_cert_file/1
+    read_cert_file/1,
+    dns01_key_authorization/2,
+    dns01_digest/2
 ]).
 
 -include_lib("public_key/include/public_key.hrl").
@@ -300,3 +302,26 @@ decode_pem_to_certs(PemBin) ->
         C:E:Stack ->
             {error, {C, E, Stack}}
     end.
+
+-doc """
+Generate DNS-01 key authorization string.
+This is the same as HTTP-01 key authorization: token + "." + base64url(thumbprint(accountKey))
+""".
+-spec dns01_key_authorization(binary(), priv_key()) -> binary().
+dns01_key_authorization(Token, AccKey) ->
+    Thumbprint = jose_jwk:thumbprint(jose_jwk:from_key(AccKey)),
+    <<Token/binary, $., Thumbprint/binary>>.
+
+-doc """
+Generate DNS-01 TXT record value.
+This is the base64url-encoded SHA-256 hash of the key authorization string.
+The ACME server will query for a TXT record at _acme-challenge.{domain} with this value.
+""".
+-spec dns01_digest(binary(), priv_key()) -> binary().
+dns01_digest(Token, AccKey) ->
+    KeyAuth = dns01_key_authorization(Token, AccKey),
+    Digest = crypto:hash(sha256, KeyAuth),
+    base64url_encode(Digest).
+
+base64url_encode(Bin) ->
+    base64:encode(Bin, #{mode => urlsafe, padding => false}).

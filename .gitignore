@@ -17,3 +17,4 @@ rebar.lock
 test/*.beam
 vars.config
 *.dump
+__pycache__/

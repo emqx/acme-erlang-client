@@ -78,11 +78,20 @@ The client is implemented as a state machine with the following states:
 -type cert() :: #'OTPCertificate'{}.
 -type domain() :: binary().
 -type httpc_opts() :: acme_client_httpc:opts().
--type challenge() :: #{
-    domain => domain(),
-    token => binary(),
-    key => binary()
-}.
+-type challenge() ::
+    #{
+        domain => domain(),
+        token => binary(),
+        key => binary()
+        % HTTP-01
+    }
+    | #{
+        domain => domain(),
+        token => binary(),
+        record_name => binary(),
+        record_value => binary()
+        % DNS-01
+    }.
 -type challenge_fn() :: fun(([challenge()]) -> ok).
 -type request() :: #{
     dir_url := dir_url(),
@@ -481,13 +490,26 @@ s6_responder(state_timeout, check_challenges, #{challenges := Challenges} = Data
                 cause => invalid_challenges, challenges => InvalidChallenges
             });
         #{<<"pending">> := [_ | _] = PendingChallenges} ->
+            ChallengeType = maps:get(challenge_type, Data),
             Args = lists:map(
                 fun(#{<<"token">> := Token, <<"domain">> := Domain}) ->
-                    #{
-                        domain => Domain,
-                        key => auth_key(Data, Token),
-                        token => Token
-                    }
+                    case ChallengeType of
+                        <<"dns-01">> ->
+                            RecordName = <<"_acme-challenge.", Domain/binary>>,
+                            RecordValue = dns01_key(Data, Token),
+                            #{
+                                domain => Domain,
+                                record_name => RecordName,
+                                record_value => RecordValue,
+                                token => Token
+                            };
+                        _ ->
+                            #{
+                                domain => Domain,
+                                key => http01_key(Data, Token),
+                                token => Token
+                            }
+                    end
                 end,
                 PendingChallenges
             ),
@@ -1034,9 +1056,13 @@ apply_challenge_fun(Data, Args) ->
             {error, {E, C, Stack}}
     end.
 
-auth_key(#{acc_key := PrivKeyFn}, Token) ->
+http01_key(#{acc_key := PrivKeyFn}, Token) ->
     Thumbprint = jose_jwk:thumbprint(jose_jwk:from_key(PrivKeyFn())),
     <<Token/binary, $., Thumbprint/binary>>.
+
+dns01_key(#{acc_key := PrivKeyFn}, Token) ->
+    AccKey = PrivKeyFn(),
+    acme_client_lib:dns01_digest(Token, AccKey).
 
 generate_csr(#{domains := Domains, cert_key := Key}) ->
     CSR = acme_client_lib:generate_csr([str(D) || D <- Domains], Key()),

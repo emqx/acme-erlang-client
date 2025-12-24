@@ -2,11 +2,14 @@ networks:
   acme-test:
     name: acme-test
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
 
 services:
-  challenge-responder:
+  http-01-responder:
     image: erlang:27
-    container_name: acme-challenge-responder
+    container_name: acme-http-01-responder
     tty: true
     networks:
       acme-test:
@@ -22,15 +25,35 @@ services:
     command: bash -c 'cp /src/test/acme_client_challenge_responder.erl ./; erlc acme_client_challenge_responder.erl; erl -eval "acme_client_challenge_responder:start([])."'
     restart: unless-stopped
 
+  dns-01-responder:
+    image: python:3.11-slim
+    container_name: acme-dns-01-responder
+    tty: true
+    networks:
+      acme-test:
+        ipv4_address: 172.21.0.10  # Fixed IP for DNS server
+    ports:
+      - "8053:8053" # HTTP API port (for test setup from host)
+    volumes:
+      - ./:/src
+    command: python3 /src/examples/acme_client_dns_responder.py
+    restart: unless-stopped
+    # Note: DNS port 53 is only accessible within Docker network for Pebble
+    # HTTP API port 8053 is exposed for test setup from host
+
   pebble:
-    image: letsencrypt/pebble
-    container_name: pebble
+    image: ghcr.io/letsencrypt/pebble:latest
+    container_name: acme-server
     depends_on:
-      - challenge-responder
+      - http-01-responder
+      - dns-01-responder
     environment:
       - PEBBLE_VA_ALWAYS_VALID=0
       - PEBBLE_VA_NOSLEEP=1
       - PEBBLE_WFE_NONCEREJECT=0
+      - PEBBLE_VA_DNS=172.21.0.10:53
+    dns:
+      - 172.21.0.10  # Use our DNS server as the container's DNS resolver
     networks:
       acme-test:
     ports:
