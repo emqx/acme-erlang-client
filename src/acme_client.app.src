@@ -33,7 +33,7 @@
     ]},
     {env, []},
     {mod, {acme_client_app, []}},
-    {licenses, ["Apache 2.0"]}
+    {licenses, ["Apache-2.0"]}
 ]}.
 
 %% Local Variables:
