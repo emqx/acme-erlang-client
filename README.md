@@ -19,11 +19,13 @@ This is a fork of [processone/p1_acme](https://github.com/processone/p1_acme) wi
 
 ## Usage
 
+### HTTP-01 Challenge
+
 ```erlang
 %% Start the application
 application:ensure_all_started(acme_client).
 
-%% Prepare the challenge responder function
+%% Prepare the HTTP-01 challenge responder function
 ChallengeFun = fun(Challenges) ->
     %% Set up HTTP-01 challenge response
     %% The ACME server will make a GET request to:
@@ -49,7 +51,7 @@ Request = #{
     contact => ["mailto:admin@example.com"],
     %% Certificate key type (ec | rsa)
     cert_type => ec,
-    %% Challenge type (currently only http-01 is tested)
+    %% Challenge type: "http-01" or "dns-01"
     challenge_type => <<"http-01">>,
     %% Challenge responder function
     challenge_fn => ChallengeFun,
@@ -102,21 +104,92 @@ The client implements a state machine that handles:
 - Automatic retries for temporary failures
 - Proper nonce management
 
-For testing purposes, you can use the included ACME test server:
+### DNS-01 Challenge
+
+DNS-01 challenges are required for wildcard certificates and are useful when HTTP-01 is not available.
+
 ```erlang
+%% DNS-01 challenge responder function
+DnsChallengeFun = fun(Challenges) ->
+    %% Set up DNS TXT records for DNS-01 challenge
+    %% The ACME server will query:
+    %% _acme-challenge.{Domain} TXT {RecordValue}
+    lists:foreach(
+        fun(#{domain := Domain, record_name := RecordName, record_value := RecordValue}) ->
+            %% Create DNS TXT record using your DNS provider's API
+            %% Example: AWS Route53, Cloudflare, Google Cloud DNS, etc.
+            ok = my_dns_provider:add_txt_record(RecordName, RecordValue)
+        end,
+        Challenges
+    )
+end.
+
 Request = #{
-    dir_url => "https://localhost:14000/dir",
-    domains => [<<"local.host">>],
-    challenge_type => <<"http-01">>,
-    challenge_fn => fun acme_client_challenge_responder:handle_challenge/1,
-    httpc_opts => #{ssl => [{verify, verify_none}]}
+    dir_url => "https://acme-staging-v02.api.letsencrypt.org/directory",
+    domains => [<<"example.com">>, <<"*.example.com">>],  % Wildcard requires DNS-01
+    challenge_type => <<"dns-01">>,
+    challenge_fn => DnsChallengeFun,
+    %% ... other options
 }.
 ```
+
+**Note**: For DNS-01 challenges, the `challenge_fn` callback receives:
+- `domain`: The domain name (e.g., `<<"example.com">>`)
+- `record_name`: The TXT record name (e.g., `<<"_acme-challenge.example.com">>`)
+- `record_value`: The base64url-encoded SHA-256 digest of the key authorization
+- `token`: The challenge token (for reference)
+
+You can use `open_port` to execute command-line tools (AWS CLI, Cloudflare API, etc.) or integrate directly with your DNS provider's API.
+
+**Example: AWS Route53 using AWS CLI**:
+
+```erlang
+%% DNS-01 challenge responder using AWS Route53 CLI script
+%% See examples/aws_route53_dns_challenge.sh for the bash script implementation
+Route53ChallengeFun = fun(Challenges) ->
+    ScriptPath = os:getenv("AWS_ROUTE53_SCRIPT", "examples/aws_route53_dns_challenge.sh"),
+    lists:foreach(
+        fun(#{record_name := RecordName, record_value := RecordValue}) ->
+            %% Execute bash script via open_port
+            Cmd = io_lib:format(
+                "~s ~s ~s",
+                [ScriptPath, RecordName, RecordValue]
+            ),
+            Port = open_port({spawn, lists:flatten(Cmd)}, [exit_status, stderr_to_stdout]),
+
+            receive
+                {Port, {exit_status, 0}} ->
+                    ok;
+                {Port, {exit_status, Status}} ->
+                    error({aws_script_failed, Status});
+                {Port, {data, Data}} ->
+                    %% Log script output
+                    io:format("AWS script output: ~s~n", [Data]),
+                    receive
+                        {Port, {exit_status, 0}} -> ok;
+                        {Port, {exit_status, Status}} -> error({aws_script_failed, Status})
+                    end
+            after 30000 ->
+                erlang:port_close(Port),
+                error(timeout)
+            end
+        end,
+        Challenges
+    )
+end.
+```
+
+**Note**:
+- The bash script `examples/aws_route53_dns_challenge.sh` handles all AWS Route53 logic
+- Make sure AWS CLI is installed and configured with appropriate credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, or `~/.aws/credentials`)
+- You can optionally set `AWS_ROUTE53_SCRIPT` environment variable to specify a custom script path
+- Optionally provide hosted zone ID as third argument to avoid lookup: `ScriptPath RecordName RecordValue ZoneID`
 
 ## Features
 
 - Full ACME protocol implementation (RFC8555)
 - HTTP-01 challenge support
+- DNS-01 challenge support (required for wildcard certificates)
 - Automatic account registration
 - Certificate issuance and renewal
 - Robust error handling and retries
@@ -141,13 +214,14 @@ The test suite includes an ACME test server and challenge responder:
    ```
 
 The ACME challenge responder runs in the container `acme-challenge-responder`.
-For implementation details, see `src/acme_client_challenge_responder.erl`.
+For implementation details, see `test/acme_client_challenge_responder.erl`.
 
 ## Roadmap
 
 - [ ] Implement certificate revocation
 - [ ] Implement account reuse with `onlyReturnExisting`
-- [ ] Add DNS challenge support
+- [x] Add DNS challenge support
+- [ ] Add support for private key password
 
 ## License
 
