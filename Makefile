@@ -36,7 +36,7 @@ xref: compile
 
 .PHONY: hex-publish
 hex-publish: clean
-	$(REBAR) hex publish
+	$(REBAR) hex publish --repo=hexpm
 
 .PHONY: cover
 cover:
