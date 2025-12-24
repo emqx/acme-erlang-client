@@ -9,3 +9,4 @@ Major refactoring.
 - To minize build dependencies, deleted `yconf` for JSON decoding and validation.
   - Do not convert JSON field names into atoms.
   - Changed from schema framework validation to naive checking of JSON layout and field values.
+- Support DNS-01 challenge.
