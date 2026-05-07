@@ -69,7 +69,10 @@ generate_csr([_ | _] = Domains, PrivKey) ->
         }
     ],
     DerExtnReq = public_key:der_encode('ExtensionRequest', Extns),
-    Attribute = #'AttributePKCS-10'{
+    %% OTP 28 dropped 'AttributePKCS-10' from public_key.hrl in favour of
+    %% 'Attribute' (same {type, values} fields). OTP <= 27 shipped both
+    %% names; using 'Attribute' here works on every OTP we currently support.
+    Attribute = #'Attribute'{
         type = ?'pkcs-9-at-extensionRequest',
         values = [{asn1_OPENTYPE, DerExtnReq}]
     },
