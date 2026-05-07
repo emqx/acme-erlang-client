@@ -1,3 +1,16 @@
+# 2.0.1
+
+- Fix `acme_client_lib:generate_csr/2` on OTP 28+: replace the removed
+  `'AttributePKCS-10'` record with `'Attribute'` (same `type`/`values`
+  fields, defined in `public_key.hrl`). OTP 27 and earlier shipped both
+  names in `OTP-PUB-KEY.hrl`, so the pre-fix code worked there; OTP 28
+  dropped `'AttributePKCS-10'`, so any consumer on OTP 28+ failed to
+  compile.
+- Add `t_generate_csr_ec` and `t_generate_csr_rsa` regression cases to
+  `acme_client_lib_SUITE` so the rename does not silently come back.
+- Add OTP 28 to the CI matrix so future PRs catch the same class of bug
+  before merge.
+
 # 2.0.0
 
 Major refactoring.

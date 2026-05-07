@@ -31,12 +31,16 @@
 
 %% Test cases
 -export([
-    t_decode_key/1
+    t_decode_key/1,
+    t_generate_csr_ec/1,
+    t_generate_csr_rsa/1
 ]).
 
 all() ->
     [
-        t_decode_key
+        t_decode_key,
+        t_generate_csr_ec,
+        t_generate_csr_rsa
     ].
 
 init_per_suite(Config) ->
@@ -156,6 +160,37 @@ t_decode_key(Config) ->
         read_key(TmpDir ++ "/rsa2.key")
     ),
     ok.
+
+%% Regression for the OTP 27 -> 28 record removal: 'AttributePKCS-10' was
+%% dropped from public_key.hrl in OTP 28 in favour of 'Attribute'.
+%% generate_csr/2 must compile and produce a CSR whose ASN.1 round-trips on
+%% every supported OTP, so we exercise both EC and RSA keys here.
+t_generate_csr_ec({init, Config}) ->
+    Config;
+t_generate_csr_ec({'end', _Config}) ->
+    ok;
+t_generate_csr_ec(_Config) ->
+    EcKey = acme_client_lib:generate_key(ec),
+    Csr = acme_client_lib:generate_csr(["mqtt.example.com"], EcKey),
+    ?assert(is_record(Csr, 'CertificationRequest')),
+    Der = public_key:der_encode('CertificationRequest', Csr),
+    ?assert(byte_size(Der) > 0),
+    Decoded = public_key:der_decode('CertificationRequest', Der),
+    ?assert(is_record(Decoded, 'CertificationRequest')).
+
+t_generate_csr_rsa({init, Config}) ->
+    Config;
+t_generate_csr_rsa({'end', _Config}) ->
+    ok;
+t_generate_csr_rsa(_Config) ->
+    RsaKey = acme_client_lib:generate_key(rsa),
+    Csr = acme_client_lib:generate_csr(
+        ["mqtt.example.com", "www.example.com"],
+        RsaKey
+    ),
+    ?assert(is_record(Csr, 'CertificationRequest')),
+    Der = public_key:der_encode('CertificationRequest', Csr),
+    ?assert(byte_size(Der) > 0).
 
 %% Helper functions for running shell commands
 cmd(Cmd) ->
