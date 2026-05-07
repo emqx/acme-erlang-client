@@ -14,6 +14,10 @@
   Recent Pebble builds reject requests without one with HTTP 400
   "All requests MUST include a User-Agent header", which broke every
   issuance suite run on `main`.
+- Bump `jose` from 1.11.10 to 1.11.12. 1.11.11 fixed EC key conversion
+  for OTP 28 (`jose_jwk_kty_ec:to_map/2` previously crashed on the new
+  `'ECPrivateKey'` shape). Without the bump the issuance suite fails on
+  OTP 28 while signing the JWS for the ACME account creation request.
 
 # 2.0.0
 
