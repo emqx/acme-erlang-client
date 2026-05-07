@@ -10,6 +10,10 @@
   `acme_client_lib_SUITE` so the rename does not silently come back.
 - Add OTP 28 to the CI matrix so future PRs catch the same class of bug
   before merge.
+- Send a `User-Agent` header on every ACME request (RFC 8555 §6.1).
+  Recent Pebble builds reject requests without one with HTTP 400
+  "All requests MUST include a User-Agent header", which broke every
+  issuance suite run on `main`.
 
 # 2.0.0
 

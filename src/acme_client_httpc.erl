@@ -35,6 +35,11 @@ HTTP client for ACME client to contact ACME servers.
 
 -define(PROFILE, acme_client).
 
+%% RFC 8555 section 6.1 requires every ACME request to carry a User-Agent
+%% header, and recent Pebble builds reject requests without one with HTTP 400
+%% "All requests MUST include a User-Agent header".
+-define(USER_AGENT_HEADER, {"user-agent", "acme-erlang-client"}).
+
 -define(DEFAULT_OPTS, #{
     timeout => timer:seconds(10),
     connect_timeout => timer:seconds(10),
@@ -61,7 +66,7 @@ The caller should expect a message with the response in the format of
 get(URL, Opts0) ->
     HttpOpts = http_opts(Opts0),
     ReqOpts = [{body_format, binary}, {sync, false}],
-    httpc:request(get, {URL, []}, HttpOpts, ReqOpts, ?PROFILE).
+    httpc:request(get, {URL, [?USER_AGENT_HEADER]}, HttpOpts, ReqOpts, ?PROFILE).
 
 -doc """
 Send a POST request to the given URL.
@@ -77,7 +82,13 @@ post(URL, Body, Opts0) ->
 
 post(URL, Body, HttpOpts, ReqOpts) ->
     ContentType = "application/jose+json",
-    httpc:request(post, {URL, [], ContentType, Body}, HttpOpts, ReqOpts, ?PROFILE).
+    httpc:request(
+        post,
+        {URL, [?USER_AGENT_HEADER], ContentType, Body},
+        HttpOpts,
+        ReqOpts,
+        ?PROFILE
+    ).
 
 http_opts(Opts) ->
     maps:to_list(maps:without([ipfamily], maps:merge(?DEFAULT_OPTS, Opts))).
