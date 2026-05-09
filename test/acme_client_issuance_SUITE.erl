@@ -130,6 +130,28 @@ t_invalid_args(_Config) ->
             }
         )
     ),
+    ?assertMatch(
+        {error, {bad_contact, 42}},
+        run(
+            #{
+                dir_url => "https://localhost:14000/dir",
+                domains => ["local.host"],
+                contact => [42]
+            }
+        )
+    ),
+    %% Erlang strings (lists of integers) are not accepted: callers must
+    %% pass binaries so JSON encoding produces a JSON string.
+    ?assertMatch(
+        {error, {bad_contact, "mailto:admin@local.net"}},
+        run(
+            #{
+                dir_url => "https://localhost:14000/dir",
+                domains => ["local.host"],
+                contact => ["mailto:admin@local.net"]
+            }
+        )
+    ),
     ok.
 
 t_one_domain({init, Config}) ->
@@ -137,10 +159,13 @@ t_one_domain({init, Config}) ->
 t_one_domain({'end', _Config}) ->
     ok;
 t_one_domain(_Config) ->
+    %% Exercise the binary-contact path so the ACME server receives valid
+    %% JSON strings in the newAccount request.
     R = run(
         #{
             dir_url => "https://localhost:14000/dir",
             domains => ["a.local.net"],
+            contact => [<<"mailto:admin@local.net">>],
             challenge_fn => fun challenge_fn/1,
             poll_interval => 100
         }

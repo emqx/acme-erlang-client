@@ -47,8 +47,8 @@ Request = #{
     %% Domains to get certificate for
     %% Note: Not all ACME servers support wildcard certificates
     domains => [<<"example.com">>, <<"*.example.com">>],
-    %% Optional contact information
-    contact => ["mailto:admin@example.com"],
+    %% Optional contact information (binary or string)
+    contact => [<<"mailto:admin@example.com">>],
     %% Certificate key type (ec | rsa)
     cert_type => ec,
     %% Challenge type: "http-01" or "dns-01"

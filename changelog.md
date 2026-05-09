@@ -1,3 +1,14 @@
+# 2.0.2
+
+- Require `contact` entries to be binaries. The README and typespec
+  previously advertised `[string()]`, but Erlang's stdlib `json` module
+  encodes a string (list of integers) as a JSON array of integers, so a
+  request with `contact => ["mailto:admin@example.com"]` was rejected
+  by ACME servers with `urn:ietf:params:acme:error:malformed` ("Error
+  unmarshaling JSON"). `make_data/3` now validates the input and
+  rejects non-binary entries with `{bad_contact, _}`. The typespec is
+  tightened to `[binary()]` and the README example uses a binary.
+
 # 2.0.1
 
 - Fix `acme_client_lib:generate_csr/2` on OTP 28+: replace the removed
