@@ -96,7 +96,7 @@ The client is implemented as a state machine with the following states:
 -type request() :: #{
     dir_url := dir_url(),
     domains := [domain()],
-    contact => [string()],
+    contact => [binary()],
     cert_type => cert_type(),
     ca_certs => [cert()],
     challenge_type => binary(),
@@ -271,7 +271,7 @@ make_data(DirURL, Domains, Request) ->
             caller_pid => self(),
             dir_url => URL,
             domains => IdnaDomains,
-            contact => maps:get(contact, Request, []),
+            contact => check_contact(maps:get(contact, Request, [])),
             cert_type => maps:get(cert_type, Request, ec),
             ca_certs => ensure_ca_certs(maps:get(ca_certs, Request, [])),
             challenge_type => maps:get(challenge_type, Request, <<"http-01">>),
@@ -802,6 +802,22 @@ check_domains([]) ->
     erlang:throw(empty_domains);
 check_domains(Domains) ->
     lists:map(fun(D) -> bin(idna:to_ascii(D)) end, Domains).
+
+%% Each contact entry must be a binary so that JSON encoding produces a
+%% JSON string. Erlang strings (lists of integers) would be encoded as
+%% integer arrays by `json:encode/1', which the ACME server rejects with
+%% `urn:ietf:params:acme:error:malformed'.
+check_contact(Contacts) when is_list(Contacts) ->
+    lists:foreach(
+        fun
+            (C) when is_binary(C) -> ok;
+            (C) -> erlang:throw({bad_contact, C})
+        end,
+        Contacts
+    ),
+    Contacts;
+check_contact(Other) ->
+    erlang:throw({bad_contact, Other}).
 
 set_request_id(RequestId, Data) ->
     Data#{request_id => RequestId}.
