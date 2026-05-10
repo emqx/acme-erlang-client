@@ -477,3 +477,54 @@ t_dns01_one_domain(_Config) ->
 
 cmd(Cmd) ->
     acme_client_test_lib:cmd(Cmd).
+
+%% A non-badNonce HTTP retry signal (e.g. an unexpected 4xx from the CA)
+%% used to fall through `handle_event/4`'s catch-all and stall the state
+%% machine until `do_run/2`'s timeout fired. The new clause aborts with a
+%% structured `http_retry_unrecoverable` reason instead, so callers fail
+%% fast.
+t_unrecoverable_http_retry_aborts({init, Config}) ->
+    ok = meck:new(acme_client_httpc, [passthrough]),
+    Config;
+t_unrecoverable_http_retry_aborts({'end', _Config}) ->
+    ok = meck:unload(acme_client_httpc),
+    ok;
+t_unrecoverable_http_retry_aborts(_Config) ->
+    %% Short-circuit the directory request: return {ok, Ref} synchronously
+    %% (matching httpc's async contract) and post a synthetic 403 response
+    %% to the calling gen_statem's mailbox so the response correlates back
+    %% to the same Ref via Data#{request_id => Ref}.
+    ok = meck:expect(
+        acme_client_httpc,
+        get,
+        fun(_URL, _Opts) ->
+            Caller = self(),
+            Ref = make_ref(),
+            Caller !
+                {http,
+                    {Ref, {
+                        {"HTTP/1.1", 403, "Forbidden"},
+                        [{"content-type", "application/problem+json"}],
+                        <<"{\"type\":\"urn:ietf:params:acme:error:unauthorized\"}">>
+                    }}},
+            {ok, Ref}
+        end
+    ),
+    %% A normally-formed request that would otherwise reach Pebble — our
+    %% mock intercepts at the very first httpc call (directory discovery).
+    Result = run(
+        #{
+            dir_url => "https://localhost:14000/dir",
+            domains => ["a.local.net"],
+            challenge_fn => fun challenge_fn/1,
+            poll_interval => 100
+        }
+    ),
+    %% Without the fix this would have been {error, timeout} (5s poll).
+    ?assertMatch(
+        {error, #{
+            cause := http_retry_unrecoverable, reason := {unknown_response, 403, "Forbidden"}
+        }},
+        Result
+    ),
+    ok.
