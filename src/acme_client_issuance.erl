@@ -730,7 +730,11 @@ s11_certificate(internal, {validate_ders, DERs}, Data) ->
                 cert_key => KeyFn(),
                 cert_chain => Chain
             },
-            ok = reply_caller(Data, {ok, Result});
+            ok = reply_caller(Data, {ok, Result}),
+            %% gen_statem state callbacks must return a state-transition
+            %% tuple. The terminal success path replies to the caller and
+            %% then stops the state machine.
+            {stop, normal, Data};
         {error, #{cause := _} = Reason} ->
             ?NEXT_ABORT(Data, Reason)
     catch
