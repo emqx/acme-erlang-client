@@ -192,7 +192,11 @@ The request is a map with the following keys:
 - `challenge_type`: The type of challenge to use, either `http-01` or `dns-01`.
 - `challenge_fn`: A function that returns the challenge for a given domain.
   The function is called with a list of challenges, and returns `ok`.
-- `httpc_opts`: The `httpc` client options.
+- `httpc_opts`: Per-request `httpc` options merged on top of the defaults
+  in `acme_client_httpc`. Common overrides are `timeout` and
+  `connect_timeout` (defaults: 30s each); `ssl` to supply CA certs;
+  `ipfamily` to force `inet`/`inet6`. Useful when the CA's `finalize`
+  endpoint is slow under load.
 - `poll_interval`: The interval to poll the order status.
 - `acc_key`: The `file://{path}` to the account key file, or term of type `public_key:private_key()`.
 - `acc_key_pass`: The password for the account key file, or `undefined` if the key is not encrypted.
@@ -930,8 +934,33 @@ handle_rsp_with_hdr(Code, Slogan, Hdrs, Body, Data, Type) when Code =< 400 ->
         false ->
             ?NEXT_ABORT(Data, #{cause => unknown_content_type, type => Type})
     end;
-handle_rsp_with_hdr(Code, Slogan, _Hdrs, _Body, Data, _Type) ->
-    ?NEXT_HTTP_RETRY(Data, {unknown_response, Code, Slogan}).
+handle_rsp_with_hdr(Code, Slogan, _Hdrs, Body, Data, Type) ->
+    %% Code > 400 with no recovery path. Try to surface the CA's RFC 7807
+    %% problem JSON so callers see a meaningful reason (e.g.
+    %% `urn:ietf:params:acme:error:rateLimited`) instead of just
+    %% `"Forbidden"` / `"Bad Request"`.
+    Base = #{cause => unknown_response, http_code => Code, http_slogan => Slogan},
+    Reason =
+        case decode_problem_body(Body, Type) of
+            {ok, Problem} -> Base#{problem => Problem};
+            error -> Base
+        end,
+    ?NEXT_HTTP_RETRY(Data, Reason).
+
+decode_problem_body(Body, "application/problem+json" ++ _) ->
+    try_decode_json(Body);
+decode_problem_body(Body, "application/json" ++ _) ->
+    try_decode_json(Body);
+decode_problem_body(_Body, _Type) ->
+    error.
+
+try_decode_json(Body) ->
+    try json:decode(Body) of
+        #{} = JSON -> {ok, JSON};
+        _ -> error
+    catch
+        _:_ -> error
+    end.
 
 handle_rsp_body(Code, Slogan, Hdrs, Body, Data, Type) ->
     try json:decode(Body) of

@@ -1,3 +1,30 @@
+# 2.0.4
+
+- Bump the default HTTP `timeout` and `connect_timeout` for ACME
+  requests from 10s to 30s. In practice the `finalize` step (CSR
+  submission → CA mints and signs the certificate) can exceed the old
+  10s budget on busy ACME servers — reproducibly observed against
+  Let's Encrypt staging — even though `directory` was returning in
+  well under a second on the same node. Callers saw a misleading
+  `{http_retry, timeout}` from `s10_finalize` for what was a transient
+  CA-side slowness. 30s gives more headroom without giving up
+  fail-fast on genuinely stuck requests; callers can raise (or lower)
+  the per-request budget by passing `httpc_opts => #{timeout => Ms,
+  connect_timeout => Ms}` in the issuance request — `http_opts/1`
+  merges the override on top of the new defaults. CT case
+  `t_httpc_opts_override_timeout` documents the override path.
+- Surface RFC 7807 problem details in the abort reason for
+  unrecoverable 4xx/5xx responses. `handle_rsp_with_hdr/6`'s
+  catch-all clause used to emit `{unknown_response, Code, Slogan}` no
+  matter what — so a 403 from a rate-limited CA reached callers as
+  bare `"Forbidden"` even when the body contained
+  `urn:ietf:params:acme:error:rateLimited` and a human `detail`.
+  The reason is now a map: `#{cause => unknown_response, http_code =>
+  Code, http_slogan => Slogan, problem => ParsedJSON}` (the `problem`
+  key is omitted when the body isn't `application/problem+json` /
+  `application/json`). The existing `t_unrecoverable_http_retry_aborts`
+  case asserts the new shape including the parsed error type.
+
 # 2.0.3
 
 - Fix `bad_return_from_state_function, ok` crash on the s11_certificate

@@ -521,10 +521,41 @@ t_unrecoverable_http_retry_aborts(_Config) ->
         }
     ),
     %% Without the fix this would have been {error, timeout} (5s poll).
+    %% The reason is now a structured map carrying the parsed RFC 7807
+    %% problem body so callers see e.g. the ACME error type, not just
+    %% "Forbidden".
     ?assertMatch(
         {error, #{
-            cause := http_retry_unrecoverable, reason := {unknown_response, 403, "Forbidden"}
+            cause := http_retry_unrecoverable,
+            reason := #{
+                cause := unknown_response,
+                http_code := 403,
+                http_slogan := "Forbidden",
+                problem := #{
+                    <<"type">> := <<"urn:ietf:params:acme:error:unauthorized">>
+                }
+            }
         }},
         Result
     ),
+    ok.
+
+%% Callers can raise (or lower) the per-request HTTP timeout by passing
+%% a `httpc_opts` override; the default is 30s, but a slow `finalize`
+%% endpoint under load may want more.
+t_httpc_opts_override_timeout({init, Config}) ->
+    Config;
+t_httpc_opts_override_timeout({'end', _Config}) ->
+    ok;
+t_httpc_opts_override_timeout(_Config) ->
+    R = run(
+        #{
+            dir_url => "https://localhost:14000/dir",
+            domains => ["a.local.net"],
+            challenge_fn => fun challenge_fn/1,
+            poll_interval => 100,
+            httpc_opts => #{timeout => 60_000, connect_timeout => 60_000}
+        }
+    ),
+    ?assertMatch({ok, _}, R),
     ok.
