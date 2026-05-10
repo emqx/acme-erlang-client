@@ -934,8 +934,33 @@ handle_rsp_with_hdr(Code, Slogan, Hdrs, Body, Data, Type) when Code =< 400 ->
         false ->
             ?NEXT_ABORT(Data, #{cause => unknown_content_type, type => Type})
     end;
-handle_rsp_with_hdr(Code, Slogan, _Hdrs, _Body, Data, _Type) ->
-    ?NEXT_HTTP_RETRY(Data, {unknown_response, Code, Slogan}).
+handle_rsp_with_hdr(Code, Slogan, _Hdrs, Body, Data, Type) ->
+    %% Code > 400 with no recovery path. Try to surface the CA's RFC 7807
+    %% problem JSON so callers see a meaningful reason (e.g.
+    %% `urn:ietf:params:acme:error:rateLimited`) instead of just
+    %% `"Forbidden"` / `"Bad Request"`.
+    Base = #{cause => unknown_response, http_code => Code, http_slogan => Slogan},
+    Reason =
+        case decode_problem_body(Body, Type) of
+            {ok, Problem} -> Base#{problem => Problem};
+            error -> Base
+        end,
+    ?NEXT_HTTP_RETRY(Data, Reason).
+
+decode_problem_body(Body, "application/problem+json" ++ _) ->
+    try_decode_json(Body);
+decode_problem_body(Body, "application/json" ++ _) ->
+    try_decode_json(Body);
+decode_problem_body(_Body, _Type) ->
+    error.
+
+try_decode_json(Body) ->
+    try json:decode(Body) of
+        #{} = JSON -> {ok, JSON};
+        _ -> error
+    catch
+        _:_ -> error
+    end.
 
 handle_rsp_body(Code, Slogan, Hdrs, Body, Data, Type) ->
     try json:decode(Body) of

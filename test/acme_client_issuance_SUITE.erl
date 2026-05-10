@@ -521,9 +521,20 @@ t_unrecoverable_http_retry_aborts(_Config) ->
         }
     ),
     %% Without the fix this would have been {error, timeout} (5s poll).
+    %% The reason is now a structured map carrying the parsed RFC 7807
+    %% problem body so callers see e.g. the ACME error type, not just
+    %% "Forbidden".
     ?assertMatch(
         {error, #{
-            cause := http_retry_unrecoverable, reason := {unknown_response, 403, "Forbidden"}
+            cause := http_retry_unrecoverable,
+            reason := #{
+                cause := unknown_response,
+                http_code := 403,
+                http_slogan := "Forbidden",
+                problem := #{
+                    <<"type">> := <<"urn:ietf:params:acme:error:unauthorized">>
+                }
+            }
         }},
         Result
     ),

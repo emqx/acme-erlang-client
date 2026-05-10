@@ -13,6 +13,17 @@
   connect_timeout => Ms}` in the issuance request — `http_opts/1`
   merges the override on top of the new defaults. CT case
   `t_httpc_opts_override_timeout` documents the override path.
+- Surface RFC 7807 problem details in the abort reason for
+  unrecoverable 4xx/5xx responses. `handle_rsp_with_hdr/6`'s
+  catch-all clause used to emit `{unknown_response, Code, Slogan}` no
+  matter what — so a 403 from a rate-limited CA reached callers as
+  bare `"Forbidden"` even when the body contained
+  `urn:ietf:params:acme:error:rateLimited` and a human `detail`.
+  The reason is now a map: `#{cause => unknown_response, http_code =>
+  Code, http_slogan => Slogan, problem => ParsedJSON}` (the `problem`
+  key is omitted when the body isn't `application/problem+json` /
+  `application/json`). The existing `t_unrecoverable_http_retry_aborts`
+  case asserts the new shape including the parsed error type.
 
 # 2.0.3
 
