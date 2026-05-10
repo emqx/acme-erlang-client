@@ -528,3 +528,23 @@ t_unrecoverable_http_retry_aborts(_Config) ->
         Result
     ),
     ok.
+
+%% Callers can raise (or lower) the per-request HTTP timeout by passing
+%% a `httpc_opts` override; the default is 30s, but a slow `finalize`
+%% endpoint under load may want more.
+t_httpc_opts_override_timeout({init, Config}) ->
+    Config;
+t_httpc_opts_override_timeout({'end', _Config}) ->
+    ok;
+t_httpc_opts_override_timeout(_Config) ->
+    R = run(
+        #{
+            dir_url => "https://localhost:14000/dir",
+            domains => ["a.local.net"],
+            challenge_fn => fun challenge_fn/1,
+            poll_interval => 100,
+            httpc_opts => #{timeout => 60_000, connect_timeout => 60_000}
+        }
+    ),
+    ?assertMatch({ok, _}, R),
+    ok.

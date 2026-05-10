@@ -1,3 +1,19 @@
+# 2.0.4
+
+- Bump the default HTTP `timeout` and `connect_timeout` for ACME
+  requests from 10s to 30s. In practice the `finalize` step (CSR
+  submission → CA mints and signs the certificate) can exceed the old
+  10s budget on busy ACME servers — reproducibly observed against
+  Let's Encrypt staging — even though `directory` was returning in
+  well under a second on the same node. Callers saw a misleading
+  `{http_retry, timeout}` from `s10_finalize` for what was a transient
+  CA-side slowness. 30s gives more headroom without giving up
+  fail-fast on genuinely stuck requests; callers can raise (or lower)
+  the per-request budget by passing `httpc_opts => #{timeout => Ms,
+  connect_timeout => Ms}` in the issuance request — `http_opts/1`
+  merges the override on top of the new defaults. CT case
+  `t_httpc_opts_override_timeout` documents the override path.
+
 # 2.0.3
 
 - Fix `bad_return_from_state_function, ok` crash on the s11_certificate

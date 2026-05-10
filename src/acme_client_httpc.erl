@@ -40,9 +40,20 @@ HTTP client for ACME client to contact ACME servers.
 %% "All requests MUST include a User-Agent header".
 -define(USER_AGENT_HEADER, {"user-agent", "acme-erlang-client"}).
 
+%% Per-request HTTP timeouts. The defaults are the budget for any single
+%% ACME endpoint round-trip. 10s used to be the default but in practice
+%% the `finalize` step (CSR submission → CA mints + signs the cert) can
+%% exceed it on busy ACME servers — most reproducibly seen against Let's
+%% Encrypt staging — leaving callers staring at a misleading
+%% `{http_retry, timeout}` even when `directory` was reachable in well
+%% under a second. 30s gives more headroom without giving up fail-fast
+%% behaviour on genuinely stuck requests. Callers can override per
+%% request by passing a `httpc_opts` map (with `timeout` and/or
+%% `connect_timeout` keys) in the issuance request — `http_opts/1`
+%% merges the override on top of these defaults.
 -define(DEFAULT_OPTS, #{
-    timeout => timer:seconds(10),
-    connect_timeout => timer:seconds(10),
+    timeout => timer:seconds(30),
+    connect_timeout => timer:seconds(30),
     autoredirect => true,
     ssl => [{verify, verify_none}]
 }).
