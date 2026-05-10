@@ -1,3 +1,15 @@
+# 2.0.3
+
+- Fix `bad_return_from_state_function, ok` crash on the s11_certificate
+  success path. After `reply_caller/2` (which returns `ok`), the case
+  clause in `acme_client_issuance:s11_certificate(internal, {validate_ders, _}, _)`
+  was evaluating to `ok`, but gen_statem state callbacks must return a
+  state-transition tuple. The caller already had its `{ok, Result}` by
+  the time the state machine died, so the existing CT cases passed —
+  the only visible symptom was a crash report in the log right after
+  every successful issuance. The terminal-success clause now returns
+  `{stop, normal, Data}`, matching the abort path.
+
 # 2.0.2
 
 - Require `contact` entries to be binaries. The README and typespec
