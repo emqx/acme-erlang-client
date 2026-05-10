@@ -9,6 +9,16 @@
   the only visible symptom was a crash report in the log right after
   every successful issuance. The terminal-success clause now returns
   `{stop, normal, Data}`, matching the abort path.
+- Abort on non-`badNonce` `?HTTP_RETRY` events instead of dropping them.
+  Previously only `?HTTP_RETRY("badNonce")` was matched in
+  `handle_event/4`; any other retry signal — most commonly
+  `?HTTP_RETRY({unknown_response, Code, Slogan})` from a 4xx/5xx the
+  client doesn't have a recovery path for — fell through to the
+  catch-all `unknown_event_ignored` clause, leaving the state machine
+  stalled until `do_run/2`'s timeout fired. The new clause replies to
+  the caller with `{error, #{cause => http_retry_unrecoverable, reason
+  => Reason}}` and stops cleanly. Adds CT coverage in
+  `t_unrecoverable_http_retry_aborts`.
 
 # 2.0.2
 

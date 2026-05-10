@@ -766,6 +766,15 @@ handle_event(StateName, internal, ?HTTP_RETRY("badNonce"), Data) ->
     Delay = maps:get(poll_interval, Data),
     DelayAction = {timeout, Delay, {start, Delay}},
     {next_state, s2_nonce, Data, DelayAction};
+handle_event(StateName, internal, ?HTTP_RETRY(Reason), Data) ->
+    %% No bounded retry strategy is implemented for non-badNonce HTTP errors,
+    %% so any other ?HTTP_RETRY signal must abort with the original reason.
+    %% Falling through to the catch-all silently drops the event and stalls
+    %% the state machine until the caller's timeout fires.
+    Msg = "aborting_on_http_retry_at_state_" ++ atom_to_list(StateName),
+    ?LOG(warning, Msg, #{reason => Reason}),
+    ok = reply_caller(Data, {error, #{cause => http_retry_unrecoverable, reason => Reason}}),
+    {stop, normal, Data};
 handle_event(StateName, internal, ?ABORT(Reason), Data) ->
     ok = reply_caller(Data, {error, Reason}),
     Msg = "aborting_at_state_" ++ atom_to_list(StateName),
