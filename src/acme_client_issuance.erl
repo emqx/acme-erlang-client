@@ -693,7 +693,13 @@ s10_finalize(internal, ?HTTP_OK(_Code, _Slogan, Hdrs, JSON), Data0) ->
                 #{<<"status">> := <<"processing">>} ->
                     {next_state, s9_poll_order, Data};
                 #{<<"status">> := <<"valid">>, <<"certificate">> := CertURL} ->
-                    {next_state, s11_certificate, Data#{cert_url => CertURL}};
+                    %% s9_poll_order's "valid" branch supplies a
+                    %% {download_certificate, _} internal action so s11
+                    %% actually fetches the chain; without it s11 enters,
+                    %% logs "certificate_retrieval_start", and idles until
+                    %% the caller's timeout fires.
+                    Action = ?INTERNAL({download_certificate, str(CertURL)}),
+                    {next_state, s11_certificate, Data#{cert_url => CertURL}, [Action]};
                 _ ->
                     ?NEXT_ABORT(Data, #{cause => bad_finalize_response, response => JSON})
             end
