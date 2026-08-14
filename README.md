@@ -4,6 +4,9 @@ An Erlang implementation of the Automatic Certificate Management Environment (AC
 
 This is a fork of [processone/p1_acme](https://github.com/processone/p1_acme) with significant refactoring. Special thanks to ProcessOne for the original implementation.
 
+Implementation reference: https://github.com/emqx/emqx/tree/master/plugins/emqx_acme
+Doc reference: https://docs.emqx.com/en/emqx/v6.1/extensions/plugin-catalog/6.1/emqx-acme.html
+
 ## Major Changes from Upstream
 
 - Reimplemented using `gen_statem` for better state management
